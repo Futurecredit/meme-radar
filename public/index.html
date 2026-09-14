@@ -636,6 +636,19 @@
     .manage-actions label { display: flex; gap: 6px; align-items: center; }
     .manage-actions input { accent-color: #4ead91; }
     .saved-row { padding: 10px 0; border-bottom: 1px solid #213a42; overflow-wrap: anywhere; }
+    .policy-editor { margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #08121699; }
+    .policy-editor h3 { margin: 0 0 6px; }
+    .policy-help { color: var(--muted); margin: 0 0 12px; }
+    .policy-group { margin-top: 14px; }
+    .policy-group h4 { margin: 0 0 9px; color: var(--cyan); }
+    .policy-grid { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 10px; }
+    .policy-field { display: grid; gap: 5px; color: var(--muted); font-size: 14px; }
+    .policy-field input { min-height: 40px; border: 1px solid var(--line); border-radius: 8px; background: #071014; color: var(--text); padding: 7px 9px; }
+    .policy-field input[aria-invalid="true"] { border-color: var(--red); }
+    .policy-field small { min-height: 18px; color: var(--muted); }
+    .policy-field .field-error { color: var(--red); }
+    @media (max-width: 1000px) { .policy-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); } }
+    @media (max-width: 620px) { .policy-grid { grid-template-columns: 1fr; } }
     dialog { color-scheme: dark; background: #101e24; color: #d7e5e3; border: 1px solid #45646a; border-radius: 12px; max-width: 520px; width: 90vw; }
     dialog::backdrop { background: #0009; }
     dialog textarea { display: block; width: 100%; min-height: 120px; margin: 16px 0; font: inherit; background: #081318; color: #e5f0ec; border: 1px solid #45646a; }
@@ -723,6 +736,15 @@
             </div>
             <p id="schedulerDetail" class="muted"></p>
             <p data-i18n="alertLimit">桌面提醒需要本页保持打开并允许通知；静音后仍保留页面事件。</p>
+            <section class="policy-editor" aria-labelledby="policyEditorTitle">
+              <h3 id="policyEditorTitle" data-i18n="policyEditorTitle">筛选策略</h3>
+              <p class="policy-help" data-i18n="policyEditorHelp">仅配置市场发现范围与扫描节奏；税率、LP、持仓集中度等安全硬门不可放宽。</p>
+              <div id="policyFields"></div>
+              <div class="manage-actions">
+                <button id="savePolicy" class="mini-button" type="button" data-i18n="savePolicy">保存策略并重扫</button>
+                <button id="resetPolicy" class="mini-button ignore" type="button" data-i18n="resetPolicy">恢复默认策略</button>
+              </div>
+            </section>
             <h3 data-i18n="savedNotes">收藏与备注</h3><div id="savedNotes"></div>
           </div>
         </details>
@@ -854,6 +876,16 @@
       liveQueueFull: ['核验队列已满，请先等待已有请求完成','核驗佇列已滿，請先等待已有請求完成','Audit queue full; wait for pending requests','審査予約が満杯です。完了をお待ちください','감사 대기열 가득 참; 기존 요청 완료 대기','طابور التدقيق ممتلئ؛ انتظر انتهاء الطلبات'],
       liveLimits: ['仅页面可见时更新；新进榜不是新发币；热度不是安全证明。','僅頁面可見時更新；新進榜不是新發幣；熱度不是安全證明。','Updates while visible. New arrival ≠ newly minted. Activity is not proof of safety.','表示中のみ更新。新規掲載≠新発行。活発さは安全の証明ではありません。','페이지 표시 중 업데이트. 새 진입 ≠ 신규 발행. 활동은 안전 증명이 아닙니다.','يُحدّث أثناء ظهور الصفحة. جديد بالقائمة لا يعني حديث الإصدار. النشاط لا يثبت الأمان.'],
       manageTitle: ['⚙ 扫描设置与记录','⚙ 掃描設定與記錄','⚙ Scan settings & records','⚙ スキャン設定と記録','⚙ 스캔 설정 및 기록','⚙ إعدادات المسح والسجلات'],
+      policyEditorTitle: ['筛选策略','篩選策略','Screening policy','スクリーニング設定','필터 정책','سياسة التصفية'],
+      policyEditorHelp: ['仅配置市场发现范围与扫描节奏；税率、LP、持仓集中度等安全硬门不可放宽。','僅設定市場發現範圍與掃描節奏；稅率、LP、持倉集中度等安全門檻不可放寬。','Configure market discovery and scan cadence only. Tax, LP and concentration safety gates remain fixed.','市場発見範囲と周期のみ設定できます。税・LP・集中度などの安全基準は固定です。','시장 발견 범위와 주기만 설정합니다. 세금, LP, 집중도 안전 기준은 고정됩니다.','يمكن ضبط نطاق السوق وإيقاع المسح فقط؛ تبقى حدود الأمان للضرائب وLP والتركيز ثابتة.'],
+      policyDiscovery: ['深审发现','深審發現','Deep-audit discovery','詳細審査の発見','심층 감사 발견','اكتشاف التدقيق العميق'],
+      policyLive: ['即时榜单','即時榜單','Live ranking','即時ランキング','실시간 순위','الترتيب الفوري'],
+      policyScan: ['扫描节奏','掃描節奏','Scan cadence','スキャン周期','스캔 주기','إيقاع المسح'],
+      savePolicy: ['保存策略并重扫','儲存策略並重掃','Save policy & rescan','保存して再スキャン','저장 후 재스캔','حفظ وإعادة المسح'],
+      resetPolicy: ['恢复默认策略','恢復預設策略','Restore defaults','既定値に戻す','기본값 복원','استعادة الافتراضي'],
+      policySaved: ['策略已保存；当前轮完成后重扫','策略已儲存；本輪完成後重掃','Policy saved; rescan queued after the current cycle','保存しました。現在の処理後に再スキャンします','저장됨; 현재 주기 후 재스캔','تم الحفظ؛ ستتم إعادة المسح بعد الدورة الحالية'],
+      policyReset: ['已恢复默认策略并排队重扫','已恢復預設策略並排隊重掃','Defaults restored and rescan queued','既定値に戻し再スキャンを予約しました','기본값 복원 및 재스캔 대기','تمت استعادة الافتراضي وجدولة إعادة المسح'],
+      policyFieldInvalid: ['数值或字段组合无效','數值或欄位組合無效','Invalid value or field combination','値または組み合わせが無効です','값 또는 필드 조합이 잘못됨','قيمة أو مجموعة حقول غير صالحة'],
       skippedAfterReject: ['安全项已拒绝，后续检查已跳过','安全項已拒絕，後續檢查已略過','Safety rejection; further checks skipped','安全項目で除外。後続チェックは省略','안전 항목에서 제외; 후속 검사 생략','رُفض لأسباب أمنية؛ تم تخطي الفحوص اللاحقة'],
       scanSelectionHelp: ['选择1–3条链轮询，共享接口额度；多链时上方标签只切换查看。','選擇1–3條鏈輪詢，共享額度；多鏈時上方標籤只切換檢視。','Poll 1–3 chains with a shared request budget; tabs change the view in multi-chain mode.','1～3チェーンを共通枠で巡回。複数チェーン時のタブは表示切替のみ。','공유 요청 한도로 1~3개 체인을 순환합니다. 다중 모드의 탭은 보기만 전환합니다.','استطلع 1–3 شبكات بميزانية طلبات مشتركة؛ التبويبات تغيّر العرض في الوضع المتعدد.'],
       saveChains: ['保存扫描链','儲存掃描鏈','Save scan chains','対象を保存','스캔 체인 저장','حفظ الشبكات'],
@@ -1303,7 +1335,7 @@
       STATE_ERROR: 'statusStateError'
     };
 
-    const defaultPolicy = {
+    const defaultRuntimePolicy = {
       scanIntervalMs: 120000,
       minimumAgeMinutes: 5,
       priorityMarketCap: [20000, 80000],
@@ -1362,6 +1394,8 @@
     let liveFingerprint = '';
     const liveQueued = new Map();
     let selectedChainsDirty = false;
+    let policyFormDirty = false;
+    let policyFingerprint = '';
     let noteTarget = null;
     let alertsEnabled = readStorage('memeRadarAlertsEnabledV1', false);
     let alertsSince = readStorage('memeRadarAlertsSinceV1', Date.now());
@@ -1376,7 +1410,7 @@
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
       const result = await response.json();
-      if (!response.ok) throw new Error(t('settingsFailed'));
+      if (!response.ok) { const error = new Error(t('settingsFailed')); error.result = result; throw error; }
       return result;
     }
 
@@ -1414,6 +1448,7 @@
       }).join('');
       byId('schedulerDetail').textContent = t('schedulerSummary', { chains: enabled.join(' / '), current: scheduler.scanningChain || activeChain(data) });
       byId('notificationButton').textContent = t(alertsEnabled ? 'muteAlerts' : 'enableAlerts');
+      renderPolicyEditor(data.policy);
       byId('savedNotes').innerHTML = Object.values(data.annotations || {}).map(function (row) {
         return '<div class="saved-row"><strong>' + escapeHtml(row.chain.toUpperCase()) + ' · ' + escapeHtml(row.address) + '</strong><div>' + escapeHtml(row.note || '')
           + '</div><div class="manage-actions"><button class="mini-button" data-saved-action="favorite" data-chain="' + escapeHtml(row.chain) + '" data-address="' + encodeURIComponent(row.address) + '">'
@@ -1434,8 +1469,60 @@
 
     function mergedPolicy(data) {
       const policy = data && data.policy ? data.policy : {};
-      return Object.assign({}, defaultPolicy, policy, {
-        scanIntervalMs: number(policy.scanIntervalMs, defaultPolicy.scanIntervalMs)
+      return Object.assign({}, defaultRuntimePolicy, {
+        scanIntervalMs: number(policy.scan && policy.scan.intervalSeconds, 120) * 1000,
+        strictLiquidity: number(policy.discovery && policy.discovery.strictLiquidity, defaultRuntimePolicy.strictLiquidity)
+      });
+    }
+
+    const policyGroups = [
+      { key: 'discovery', title: 'policyDiscovery', fields: [
+        ['minMarketCap','Min market cap','USD',0,1000000000], ['maxMarketCap','Max market cap','USD',0,1000000000],
+        ['priorityMinMarketCap','Priority min cap','USD',0,1000000000], ['priorityMaxMarketCap','Priority max cap','USD',0,1000000000],
+        ['minLiquidity','Initial min liquidity','USD',0,1000000000], ['strictLiquidity','Deep-audit min liquidity','USD',0,1000000000],
+        ['minAgeMinutes','Min token age','min',1,1440], ['maxAgeMinutes','Max token age','min',2,43200]
+      ]},
+      { key: 'live', title: 'policyLive', fields: [
+        ['minMarketCap','Min market cap','USD',0,1000000000], ['maxMarketCap','Max market cap','USD',0,1000000000],
+        ['minLiquidity','Min liquidity','USD',0,1000000000], ['minAgeMinutes','Min token age','min',1,1440]
+      ]},
+      { key: 'scan', title: 'policyScan', fields: [
+        ['intervalSeconds','Scan interval','sec',30,1800], ['maxDeepAuditsPerCycle','Deep audits per cycle','count',1,12]
+      ]}
+    ];
+
+    function renderPolicyEditor(policy) {
+      if (!policy || policy.version !== 1 || policyFormDirty) return;
+      const fingerprint = JSON.stringify(policy);
+      if (fingerprint === policyFingerprint && byId('policyFields').children.length) return;
+      policyFingerprint = fingerprint;
+      byId('policyFields').innerHTML = policyGroups.map(function (group) {
+        return '<div class="policy-group"><h4>' + escapeHtml(t(group.title)) + '</h4><div class="policy-grid">' + group.fields.map(function (field) {
+          const path = group.key + '.' + field[0], value = policy[group.key][field[0]];
+          return '<label class="policy-field"><span>' + escapeHtml(field[1]) + '</span><input type="number" step="1" min="' + field[3] + '" max="' + field[4]
+            + '" value="' + escapeHtml(value) + '" data-policy-path="' + path + '"><small>' + escapeHtml(field[2] + ' · ' + field[3] + '–' + field[4])
+            + '</small><span class="field-error" data-policy-error="' + path + '" aria-live="polite"></span></label>';
+        }).join('') + '</div></div>';
+      }).join('');
+    }
+
+    function policyFromForm() {
+      const policy = { version: 1, discovery: {}, live: {}, scan: {} };
+      byId('policyFields').querySelectorAll('[data-policy-path]').forEach(function (input) {
+        const parts = input.dataset.policyPath.split('.');
+        policy[parts[0]][parts[1]] = Number(input.value);
+      });
+      return policy;
+    }
+
+    function showPolicyErrors(fields) {
+      byId('policyFields').querySelectorAll('[data-policy-error]').forEach(function (element) { element.textContent = ''; });
+      byId('policyFields').querySelectorAll('[data-policy-path]').forEach(function (input) { input.removeAttribute('aria-invalid'); });
+      Object.keys(fields || {}).forEach(function (path) {
+        const error = byId('policyFields').querySelector('[data-policy-error="' + path + '"]');
+        const input = byId('policyFields').querySelector('[data-policy-path="' + path + '"]');
+        if (error) error.textContent = t('policyFieldInvalid') + ' (' + fields[path] + ')';
+        if (input) input.setAttribute('aria-invalid', 'true');
       });
     }
 
@@ -2427,6 +2514,35 @@
     });
     byId('closeGmgnOnboarding').addEventListener('click', function () { byId('gmgnOnboardingDialog').close(); });
     byId('scanSelection').addEventListener('change', function () { selectedChainsDirty = true; });
+    byId('policyFields').addEventListener('input', function (event) {
+      const input = event.target.closest('[data-policy-path]');
+      if (!input) return;
+      policyFormDirty = true;
+      input.removeAttribute('aria-invalid');
+      const error = byId('policyFields').querySelector('[data-policy-error="' + input.dataset.policyPath + '"]');
+      if (error) error.textContent = '';
+    });
+    byId('savePolicy').addEventListener('click', async function () {
+      try {
+        const result = await postLocal('/api/policy', { policy: policyFromForm() });
+        policyFormDirty = false; policyFingerprint = '';
+        if (lastData) lastData.policy = result.policy;
+        renderPolicyEditor(result.policy);
+        showToast(t('policySaved'));
+      } catch (error) {
+        showPolicyErrors(error.result && error.result.fields);
+        showToast(t('settingsFailed'));
+      }
+    });
+    byId('resetPolicy').addEventListener('click', async function () {
+      try {
+        const result = await postLocal('/api/policy-reset', {});
+        policyFormDirty = false; policyFingerprint = '';
+        if (lastData) lastData.policy = result.policy;
+        renderPolicyEditor(result.policy);
+        showToast(t('policyReset'));
+      } catch { showToast(t('settingsFailed')); }
+    });
     byId('saveChains').addEventListener('click', async function () {
       const chains = Array.from(byId('scanSelection').querySelectorAll('input:checked')).map(function (input) { return input.value; });
       if (!chains.length || chains.length > 3) return showToast(t('chainSelectionInvalid'));

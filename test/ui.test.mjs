@@ -83,7 +83,7 @@ test('语言下拉使用地球图标和深色高对比选项', () => {
 });
 
 test('翻译词典完整覆盖静态挂点和动态文案键', () => {
-  const dictionarySource = html.match(/const messages = (\{[\s\S]*?\n    \});\n\n    let currentLocale/);
+  const dictionarySource = html.match(/const messages = (\{[\s\S]*?\r?\n    \});\r?\n\r?\n    let currentLocale/);
   assert.ok(dictionarySource, '应能提取翻译词典');
   const messages = vm.runInNewContext('(' + dictionarySource[1] + ')');
   for (const [key, values] of Object.entries(messages)) {
@@ -161,4 +161,15 @@ test('候选表明确展示GoPlus与DexScreener交叉验证', () => {
   assert.match(html, /GoPlus未见致命项/);
   assert.match(html, /Dex复核/);
   assert.match(html, /多源数据冲突/);
+});
+
+test('折叠设置区提供策略载入、行内错误、保存与重置且不暴露安全硬门编辑', () => {
+  assert.match(html, /id="policyFields"/);
+  assert.match(html, /policyGroups[\s\S]*discovery[\s\S]*live[\s\S]*scan/);
+  assert.match(html, /data-policy-path/);
+  assert.match(html, /data-policy-error/);
+  assert.match(html, /postLocal\('\/api\/policy', \{ policy: policyFromForm\(\) \}\)/);
+  assert.match(html, /postLocal\('\/api\/policy-reset', \{\}\)/);
+  assert.match(html, /policyFormDirty = true/);
+  assert.doesNotMatch(html, /data-policy-path="[^\"]*(?:Tax|LpLocked|Top10|Insider|Bot|Linked)/i);
 });

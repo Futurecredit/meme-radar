@@ -5,11 +5,11 @@
   "author": "DeFi狙击手 (@bi_9527zx)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nhovongoc0-max/meme-radar.git"
+    "url": "git+https://github.com/Futurecredit/meme-radar.git"
   },
-  "homepage": "https://github.com/nhovongoc0-max/meme-radar#readme",
+  "homepage": "https://github.com/Futurecredit/meme-radar#readme",
   "bugs": {
-    "url": "https://github.com/nhovongoc0-max/meme-radar/issues"
+    "url": "https://github.com/Futurecredit/meme-radar/issues"
   },
   "private": true,
   "license": "AGPL-3.0-only",

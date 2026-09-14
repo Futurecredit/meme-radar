@@ -16,19 +16,20 @@
 - GoPlus 与 DexScreener 在已支持链上补充合约风险、市值、流动性和官网交叉验证，并明确标记数据缺失或冲突。
 - 候选币可直接打开官网、GMGN 和 X，由使用者人工核验叙事与社区；雷达不会因社交热度自动下单。
 - 提供收藏、备注、桌面提醒、筛选记录导出，以及 5 分钟至 24 小时的影子表现跟踪。
+- 可在“扫描设置与记录”中配置深审发现、即时榜单和扫描节奏；安全硬门固定在代码中，不允许从网页放宽。
 - API Key 和 Agent 认证私钥只保存在当前电脑；程序只扫描、只筛选、永不下单。
 
 ## 下载
 
-- [Windows x64 一键便携版](https://github.com/nhovongoc0-max/meme-radar/releases/latest/download/MemeRadar-OpenSource-Windows-x64-0.1.6.zip)
-- [macOS 版](https://github.com/nhovongoc0-max/meme-radar/releases/latest/download/MemeRadar-OpenSource-macOS-0.1.6.zip)
+- [Windows x64 一键便携版](https://github.com/Futurecredit/meme-radar/releases/latest/download/MemeRadar-OpenSource-Windows-x64-0.1.6.zip)
+- [macOS 版](https://github.com/Futurecredit/meme-radar/releases/latest/download/MemeRadar-OpenSource-macOS-0.1.6.zip)
 
-也可以在 [Releases](https://github.com/nhovongoc0-max/meme-radar/releases) 页面查看版本说明与文件校验值。
+也可以在 [Releases](https://github.com/Futurecredit/meme-radar/releases) 页面查看版本说明与文件校验值，问题请提交到 [Issues](https://github.com/Futurecredit/meme-radar/issues)。
 
 ## 安全边界
 
 - HTTP 服务只监听本机回环地址。
-- 设置接口仅用于扫描链、收藏备注、保存或断开本机 GMGN API Key；不提供任何交易接口。
+- 设置接口仅用于扫描链、筛选策略、收藏备注、保存或断开本机 GMGN API Key；不提供任何交易接口。
 - GMGN API Key 只写入本项目 `state/gmgn-api-key`；创建 API 所需的 Ed25519 认证私钥只写入本项目的受限状态文件（目录 `0700`、文件 `0600`）。API Key 和私钥都不进入命令参数、状态 JSON、日志、HTTP 响应或浏览器存储，页面只会取得可公开上传的公钥。
 - 浏览器只获取经过字段白名单过滤的状态，不返回上游原始响应。
 - 未知或无法解析的风险字段不应被视为通过。
@@ -65,6 +66,8 @@
 
 - 默认每轮最多深审 6 个币，并受时间预算限制。按端点权重串行发送请求，明确的安全拒绝会提前结束审计。短期缓存最长 60 秒；遇到限流等待服务端冷却并降低速度，不绕过套餐限制。
 - 展开“扫描设置与记录”，可选择 1–3 条链轮询，共用请求预算。单链模式点击链标签会切换扫描链；多链模式标签只切换查看，不打断后台轮询。界面标出当前链的第二数据源接入范围；“已接入”不代表每次查询都成功。
+- 同一区域可编辑深审发现范围、即时榜单范围和扫描节奏。保存后，正在执行的轮次继续使用其启动时的完整策略快照，完成后立即排队重扫；即时榜单在下一次轮询使用新策略。恢复默认值也会排队重扫。
+- 策略保存在 `state/preferences.json` 并保留一份有效备份；旧版偏好文件会自动补入默认策略，不改变链选择、收藏或备注。导出记录包含完整策略，但不包含 GMGN Key、签名私钥或上游原始响应。
 - 收藏与备注保存在本机 `state/preferences.json`，最多 50 个收藏、500 条备注。收藏币掉出发现范围后继续复查风险，不因此重新成为通过候选。关闭某条链的扫描后，该链的风险复查不再执行，但已有影子样本仍会排队补取历史价格。
 - 人工通过绑定审核版本并最长保留 24 小时；风险状态变化后须重新确认。Solana 地址保留大小写。人工通过/忽略记录仅保存在当前浏览器，收藏备注由本机服务保存。
 - 桌面提醒需手动开启并授权，且保持页面打开；只提醒新候选、风险恶化和长时间扫描失败。相同候选事件 30 分钟去重，静音不删除页面事件。未授权时不会影响扫描。
