@@ -425,7 +425,8 @@ function inlineHashes(html, tagName) {
   const hashes = [];
   const pattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, 'gi');
   for (const match of html.matchAll(pattern)) {
-    const digest = crypto.createHash('sha256').update(match[1], 'utf8').digest('base64');
+    const browserText = match[1].replace(/\r\n?/g, '\n');
+    const digest = crypto.createHash('sha256').update(browserText, 'utf8').digest('base64');
     hashes.push(`'sha256-${digest}'`);
   }
   return hashes;
