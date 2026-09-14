@@ -570,7 +570,7 @@ function allowedChainIds(supportedChains) {
   return new Set(configured.length ? configured : CHAIN_IDS);
 }
 
-export function createServer({ state, settings, controls, switchChain, saveGmgnKey, disconnectGmgnKey, getGmgnOnboarding, getGmgnConnection, liveDiscovery, enqueueReview, supportedChains = [] }) {
+export function createServer({ state, settings, controls, switchChain, saveGmgnKey, disconnectGmgnKey, getGmgnOnboarding, getGmgnConnection, liveDiscovery, enqueueReview, requestPolicyScan, supportedChains = [] }) {
   const dashboard = path.join(settings.publicDir, 'index.html');
   const dashboardHtml = fs.readFileSync(dashboard, 'utf8');
   const csp = contentSecurityPolicy(dashboardHtml);
@@ -612,6 +612,29 @@ export function createServer({ state, settings, controls, switchChain, saveGmgnK
         return sendJson(res, 200, snapshot, csp);
       } catch (error) {
         return sendJson(res, [400, 413, 415].includes(error?.statusCode) ? error.statusCode : 500, { error: 'live_request_failed' }, csp);
+      }
+    }
+
+    if (req.method === 'POST' && ['/api/policy', '/api/policy-reset'].includes(url.pathname)) {
+      if (!req.headers.origin) return sendJson(res, 403, { error: 'local_request_required' }, csp);
+      if (!controls) return sendJson(res, 503, { error: 'settings_unavailable' }, csp);
+      try {
+        const body = await readSmallJson(req, 8192);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return sendJson(res, 400, { error: 'invalid_policy', fields: { policy: 'object_required' } }, csp);
+        let result;
+        if (url.pathname === '/api/policy-reset') {
+          if (Object.keys(body).length) return sendJson(res, 400, { error: 'invalid_policy', fields: { request: 'unknown_field' } }, csp);
+          result = controls.resetPolicy();
+        } else {
+          if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'policy')) return sendJson(res, 400, { error: 'invalid_policy', fields: { request: 'invalid_shape' } }, csp);
+          result = controls.setPolicy(body.policy);
+        }
+        requestPolicyScan?.();
+        return sendJson(res, 200, result, csp);
+      } catch (error) {
+        if (error?.code === 'INVALID_POLICY') return sendJson(res, 400, { error: 'invalid_policy', fields: error.fields }, csp);
+        const status = [400, 413, 415].includes(error?.statusCode) ? error.statusCode : 500;
+        return sendJson(res, status, { error: status === 413 ? 'request_too_large' : 'policy_not_saved' }, csp);
       }
     }
 
@@ -744,6 +767,7 @@ export function createServer({ state, settings, controls, switchChain, saveGmgnK
         note: publicMessage(value.note, '[redacted]', 500), updatedAt: finite(value.updatedAt)
       }]));
       const output = { ...toPublicStatus(selected), gmgnConnection, annotations,
+        policy: controls?.policy?.(),
         scheduler: { scanningChain: text(state.value.activeChain, 32), enabledChains: controls?.value.enabledChains || [state.value.activeChain],
           lastSuccessAt: finite(state.value.lastSuccessAt), status: text(state.value.status, 32) },
         coverage: Object.fromEntries([...CHAIN_IDS].map(id => [id, {

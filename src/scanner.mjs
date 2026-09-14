@@ -5,6 +5,7 @@ import { socialGate } from './social.mjs';
 import { tokenInfoPrice } from './gmgn.mjs';
 import { collectOutcomeSamples, dueOutcomeJobs, outcomeCoverage, sampleRejected } from './outcomes.mjs';
 import { tokenKey } from './local-store.mjs';
+import { runtimePolicy } from './policy.mjs';
 
 const numberOrNull = value => {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
@@ -413,7 +414,8 @@ export class Scanner {
   enqueueReview(chain, row) {
     const enabled = this.controls?.value.enabledChains || [this.activeChain];
     if (!enabled.includes(chain)) return { accepted: false, reason: 'chain_not_scanning' };
-    if (!row || !discoveryScreen(row, { ...this.config, chain }).pass) return { accepted: false, reason: 'outside_audit_scope' };
+    const policySettings = this.controls ? runtimePolicy(this.controls.policy()) : {};
+    if (!row || !discoveryScreen(row, { ...this.config, ...policySettings, chain }).pass) return { accepted: false, reason: 'outside_audit_scope' };
     const scope = this.activeChain === chain ? this.state.value : this.state.value.chainStates?.[chain];
     const queued = scope?.auditQueue?.find(item => addressKey(item.address) === addressKey(row.address));
     if (queued?.status === 'HARD_REJECT' && queued.nextAuditAt > Date.now()) return { accepted: false, reason: 'risk_rejected' };
@@ -430,11 +432,12 @@ export class Scanner {
     this.running = true;
     const chain = this.activeChain;
     const chainCount = this.controls?.value.enabledChains.length || 1;
-    const settings = { ...this.config, chain,
-      maxDeepAuditsPerCycle: Math.max(1, Math.ceil(this.config.maxDeepAuditsPerCycle / chainCount)),
+    const policySettings = this.controls ? runtimePolicy(this.controls.policy()) : {};
+    const settings = Object.freeze({ ...this.config, ...policySettings, chain,
+      maxDeepAuditsPerCycle: Math.max(1, Math.ceil((policySettings.maxDeepAuditsPerCycle ?? this.config.maxDeepAuditsPerCycle) / chainCount)),
       auditCycleBudgetMs: Math.max(20_000, (this.config.auditCycleBudgetMs || 80_000) / chainCount),
       outcomeReadsPerCycle: Math.max(1, Math.ceil((this.config.outcomeReadsPerCycle || 4) / chainCount))
-    };
+    });
     const keyEpoch = this.gmgn.keyEpoch;
     const startedAt = Date.now();
     const prior = structuredClone(this.state.value);
@@ -462,7 +465,7 @@ export class Scanner {
         return;
       }
 
-      let discovered = await this.gmgn.discover(chain);
+      let discovered = await this.gmgn.discover(chain, settings);
       if (this.gmgn.keyEpoch !== keyEpoch) return;
       const reviewRequests = [...this.requestedReviews.values()].filter(item => item.chain === chain
         && item.epoch === keyEpoch && Date.now() - item.at <= 10 * 60000);
@@ -774,7 +777,8 @@ export class Scanner {
         throw error;
       } finally {
         if (!this.stopped) {
-          const interval = Math.max(30_000, this.config.scanIntervalMs / (this.controls?.value.enabledChains.length || 1));
+          const configuredInterval = this.controls ? runtimePolicy(this.controls.policy()).scanIntervalMs : this.config.scanIntervalMs;
+          const interval = Math.max(30_000, configuredInterval / (this.controls?.value.enabledChains.length || 1));
           const wait = Math.max(1000, interval - (Date.now() - started), num(this.gmgn.nextAllowedAt) - Date.now());
           this.timer = setTimeout(() => { void tick(); }, wait);
         }

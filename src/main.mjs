@@ -35,7 +35,7 @@ gmgn.nextAllowedAt = Math.max(0, Number(state.value.retryAt) || 0);
 const controls = new RadarControls(config.stateDir, config.supportedChains, state.value.activeChain || config.chain);
 const scanner = new Scanner({ gmgn, secondary: new SecondaryValidator(), state, controls });
 const connection = new GmgnConnection({ gmgn, keyStore, scanner });
-const liveDiscovery = new LiveDiscovery({ gmgn });
+const liveDiscovery = new LiveDiscovery({ gmgn, policyProvider: () => controls.policy() });
 
 if (once) {
   await scanner.cycle();
@@ -48,6 +48,7 @@ const server = createServer({
   controls,
   liveDiscovery,
   enqueueReview: (chain, row) => scanner.enqueueReview(chain, row),
+  requestPolicyScan: () => scanner.requestCycle(),
   settings: config,
   supportedChains: config.supportedChains,
   switchChain: chain => scanner.switchChain(chain),

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { defaultPolicy, requirePolicy } from './policy.mjs';
 
 export function atomicJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -48,10 +49,12 @@ export class RadarControls {
   constructor(dir, chains, initialChain) {
     this.file = path.join(dir, 'preferences.json');
     this.chains = chains;
-    const defaults = { enabledChains: [initialChain], annotations: {} };
+    const defaults = { enabledChains: [initialChain], annotations: {}, policy: defaultPolicy() };
     this.value = { ...defaults, ...readJsonWithBackup(this.file, defaults).value };
     this.value.enabledChains = [...new Set(this.value.enabledChains)].filter(x => chains.includes(x)).slice(0, 3);
     if (!this.value.enabledChains.length) this.value.enabledChains = [initialChain];
+    try { this.value.policy = requirePolicy(this.value.policy); }
+    catch { this.value.policy = requirePolicy(defaultPolicy()); }
   }
   setChains(chains) {
     if (!Array.isArray(chains) || !chains.length || chains.length > 3 || new Set(chains).size !== chains.length || chains.some(x => !this.chains.includes(x))) {
@@ -60,6 +63,19 @@ export class RadarControls {
     this.value.enabledChains = [...chains];
     atomicJson(this.file, this.value);
     return { enabledChains: this.value.enabledChains };
+  }
+  policy() {
+    return requirePolicy(this.value.policy);
+  }
+  setPolicy(policy) {
+    const validated = requirePolicy(policy);
+    const next = { ...this.value, policy: structuredClone(validated) };
+    atomicJson(this.file, next);
+    this.value = next;
+    return { saved: true, policy: validated };
+  }
+  resetPolicy() {
+    return this.setPolicy(defaultPolicy());
   }
   annotate({ chain, address, favorite, note }) {
     if (!this.chains.includes(chain) || typeof address !== 'string'

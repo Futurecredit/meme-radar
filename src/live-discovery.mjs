@@ -1,6 +1,7 @@
 import { normalizeList } from './gmgn.mjs';
 import { discoveryScreen } from './scoring.mjs';
 import { config } from './config.mjs';
+import { defaultPolicy, requirePolicy, runtimePolicy } from './policy.mjs';
 
 const number = value => value === null || value === undefined || value === '' || typeof value === 'boolean'
   ? null : Number.isFinite(Number(value)) ? Number(value) : null;
@@ -17,22 +18,27 @@ const safeUrl = value => {
   catch { return ''; }
 };
 
-export function liveRequestArgs(chain) {
+export function liveRequestArgs(chain, policy = defaultPolicy()) {
+  const live = requirePolicy(policy).live;
   return ['market', 'trending', '--chain', chain, '--interval', '1m', '--limit', '100',
-    '--order-by', 'volume', '--direction', 'desc', '--min-created', '5m',
-    '--min-marketcap', '10000', '--max-marketcap', '500000', '--min-liquidity', '3000', '--raw'];
+    '--order-by', 'volume', '--direction', 'desc', '--min-created', `${live.minAgeMinutes}m`,
+    '--min-marketcap', String(live.minMarketCap), '--max-marketcap', String(live.maxMarketCap),
+    '--min-liquidity', String(live.minLiquidity), '--raw'];
 }
 
 // This is a discovery snapshot, never an audit verdict. No extra per-token reads.
-export function normalizeLiveRows(input, chain, previous = [], at = Date.now(), initialized = false) {
+export function normalizeLiveRows(input, chain, previous = [], at = Date.now(), initialized = false, policy = defaultPolicy()) {
+  const validated = requirePolicy(policy);
+  const live = validated.live;
+  const discovery = runtimePolicy(validated);
   const before = new Map(previous.map(row => [identity(chain, row.address), row]));
   const unique = new Map();
   for (const raw of input.slice(0, 100)) {
     if (!raw || !addressValid(chain, raw.address) || (raw.chain && raw.chain !== chain)) continue;
     const address = identity(chain, raw.address);
     const mc = number(raw.market_cap), liquidity = number(raw.liquidity), created = number(raw.creation_timestamp);
-    if (mc === null || mc < 10000 || mc > 500000 || liquidity === null || liquidity < 3000
-      || created === null || created <= 0 || at / 1000 - created < 300) continue;
+    if (mc === null || mc < live.minMarketCap || mc > live.maxMarketCap || liquidity === null || liquidity < live.minLiquidity
+      || created === null || created <= 0 || at / 1000 - created < live.minAgeMinutes * 60) continue;
     if (flag(raw.is_wash_trading) === true || (chain !== 'sol' && flag(raw.is_honeypot) === true)
       || [raw.rug_ratio, raw.bundler_rate, raw.rat_trader_amount_rate].some(value => rate(value) !== null && rate(value) > .3)) continue;
     const old = before.get(address);
@@ -52,17 +58,18 @@ export function normalizeLiveRows(input, chain, previous = [], at = Date.now(), 
       priceDelta: comparable && price > 0 && old.price > 0 ? price / old.price - 1 : null,
       holdersDelta: comparable && holders !== null && old.holders !== null ? holders - old.holders : null,
       smartDelta: comparable && smart !== null && old.smartMoney !== null ? smart - old.smartMoney : null,
-      priorityBand: mc >= 20000 && mc <= 80000, hasUnknownRisk,
+      priorityBand: mc >= validated.discovery.priorityMinMarketCap && mc <= validated.discovery.priorityMaxMarketCap, hasUnknownRisk,
       website: safeUrl(raw.website), twitter: safeText(raw.twitter_username, 80),
-      auditEligible: discoveryScreen(raw, { ...config, chain }, at / 1000).pass
+      auditEligible: discoveryScreen(raw, { ...config, ...discovery, chain }, at / 1000).pass
     });
   }
   return [...unique.values()].sort((a, b) => (b.volume1m || 0) - (a.volume1m || 0));
 }
 
 export class LiveDiscovery {
-  constructor({ gmgn, settings = config, now = Date.now, intervalMs = 20000, leaseMs = 30000, schedule = setTimeout, cancel = clearTimeout }) {
+  constructor({ gmgn, settings = config, policyProvider = defaultPolicy, now = Date.now, intervalMs = 20000, leaseMs = 30000, schedule = setTimeout, cancel = clearTimeout }) {
     this.gmgn = gmgn; this.settings = settings; this.now = now; this.intervalMs = Math.max(20000, intervalMs);
+    this.policyProvider = policyProvider;
     this.leaseMs = leaseMs; this.schedule = schedule; this.cancel = cancel;
     this.states = new Map(); this.raw = new Map(); this.focus = ''; this.leaseUntil = 0;
     this.nextPollAt = 0; this.running = false; this.timer = null; this.stopped = false; this.epoch = gmgn.keyEpoch;
@@ -100,14 +107,15 @@ export class LiveDiscovery {
       if (!await this.gmgn.configured()) {
         this.states.set(chain, { ...old, status: 'AUTH_REQUIRED', lastAttemptAt: at }); return;
       }
-      const result = await this.gmgn.run(liveRequestArgs(chain), { deadline: Date.now() + 25000 });
+      const policy = requirePolicy(this.policyProvider());
+      const result = await this.gmgn.run(liveRequestArgs(chain, policy), { deadline: Date.now() + 25000 });
       if (this.stopped || epoch !== this.gmgn.keyEpoch) return;
       let payload = result;
       for (let i = 0; i < 3 && payload && !Array.isArray(payload) && payload.data != null; i++) payload = payload.data;
       if (!Array.isArray(payload) && !Array.isArray(payload?.rank)) throw new Error('invalid_live_response');
       const input = normalizeList(result, ['rank']);
       const now = this.now();
-      const rows = normalizeLiveRows(input, chain, old.rows, now, old.lastSuccessAt > 0);
+      const rows = normalizeLiveRows(input, chain, old.rows, now, old.lastSuccessAt > 0, policy);
       this.states.set(chain, { rows, status: 'READY', lastAttemptAt: at, lastSuccessAt: now,
         requestMs: now - at, pollCount: old.pollCount + 1, receivedCount: input.length, filteredCount: Math.max(0, input.length - rows.length) });
       this.raw.set(chain, new Map(input.filter(row => row && addressValid(chain, row.address) && rows.some(x => identity(chain, row.address) === x.address))
