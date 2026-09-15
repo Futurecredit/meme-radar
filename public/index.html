@@ -358,19 +358,8 @@
       font-size: 14px;
       vertical-align: 2px;
     }
-    .outcome-grid {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-    }
-    .outcome-item {
-      min-height: 82px;
-      padding: 13px 16px;
-      border-right: 1px solid var(--line-soft);
-    }
-    .outcome-item:last-child { border-right: 0; }
-    .outcome-item label { display: block; color: var(--muted); font-size: 14px; }
-    .outcome-item strong { display: block; margin-top: 5px; font: 800 18px ui-monospace, monospace; }
-    .outcome-item small { display: block; margin-top: 3px; color: var(--muted); font-size: 14px; }
+    .outcome-value { font: 800 16px ui-monospace, monospace; }
+    .outcome-count { display: block; margin-top: 2px; color: var(--muted); font-size: 14px; }
     .sample-gate {
       padding: 10px 16px;
       border-top: 1px solid var(--line-soft);
@@ -421,7 +410,7 @@
       max-height: min(68vh, 780px);
       scrollbar-color: #385d68 #091216;
     }
-    table { width: 100%; min-width: 1540px; border-collapse: separate; border-spacing: 0; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; }
     th, td {
       padding: 12px 13px;
       border-bottom: 1px solid var(--line);
@@ -450,6 +439,18 @@
     tbody tr:hover td { background: #12252be8; }
     tr.stale td { background: #211b12d6; }
     tr.expired td { background: #28151ad6; }
+    .compact-table th, .compact-table td { padding: 8px 10px; line-height: 1.35; vertical-align: middle; }
+    .audit-table { min-width: 1540px; }
+    .audit-table td { vertical-align: top; }
+    .live-table { min-width: 1260px; }
+    .outcome-table { min-width: 760px; }
+    .coverage-table { min-width: 760px; }
+    .live-table th:first-child, .live-table td:first-child { min-width: 185px; }
+    .outcome-table th:first-child, .outcome-table td:first-child,
+    .coverage-table th:first-child, .coverage-table td:first-child { min-width: 120px; }
+    .compact-token { display: grid; gap: 2px; }
+    .compact-token .addr { margin-top: 1px; }
+    .compact-actions { min-width: 110px; }
 
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .good { color: var(--green); }
@@ -513,6 +514,31 @@
     .mini-button.ignore { color: #c4d0cd; border-color: #52616a; }
     .mini-button.active { background: #17342a; box-shadow: inset 0 0 0 1px currentColor; }
     .mini-button:disabled { cursor: not-allowed; opacity: .42; }
+    .action-menu { position: relative; }
+    .action-menu > summary {
+      width: max-content;
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border: 1px solid #2e5964;
+      border-radius: 6px;
+      background: #0b1c22;
+      color: var(--cyan);
+      cursor: pointer;
+      list-style: none;
+      font-size: 14px;
+    }
+    .action-menu > summary::-webkit-details-marker { display: none; }
+    .action-menu[open] > summary { background: #17342a; }
+    .action-menu .links, .action-menu .review-actions {
+      min-width: 220px;
+      margin-top: 6px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #081216;
+    }
 
     .events { padding: 8px 16px 14px; max-height: 390px; overflow: auto; }
     .event { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
@@ -552,7 +578,6 @@
       .telemetry-item:nth-child(-n+3) { border-bottom: 1px solid var(--line-soft); }
       .metric { grid-column: span 4; }
       .half { grid-column: span 12; }
-      .outcome-grid { grid-template-columns: repeat(3, 1fr); }
     }
     @media (max-width: 760px) {
       .shell { width: calc(100% - 20px); padding-top: 14px; }
@@ -566,7 +591,6 @@
       .telemetry-item:nth-child(odd) { border-right: 1px solid var(--line-soft); }
       .telemetry-item:nth-child(even) { border-right: 0; }
       .metric { grid-column: span 6; }
-      .outcome-grid { grid-template-columns: 1fr 1fr; }
       .toolbar { grid-template-columns: 1fr; }
       .criteria { grid-template-columns: 1fr; }
       .footer { flex-direction: column; }
@@ -599,7 +623,7 @@
       text-align: left;
       unicode-bidi: isolate;
     }
-    html[dir="rtl"] .metric strong, html[dir="rtl"] .outcome-item strong, html[dir="rtl"] time {
+    html[dir="rtl"] .metric strong, html[dir="rtl"] .outcome-value, html[dir="rtl"] time {
       direction: ltr;
       unicode-bidi: isolate;
     }
@@ -614,22 +638,13 @@
     .live-toolbar input { flex: 1 1 220px; }
     .live-toolbar select { max-width: 230px; }
     .live-meta { padding: 0 18px 12px; font-size: 14px; }
-    .live-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 0 18px 18px; max-height: 600px; overflow: auto; scrollbar-gutter: stable; }
-    .live-card { border: 1px solid #2d424c; border-radius: 10px; padding: 14px; background: #101b22; min-width: 0; }
-    .live-card.new-sighting { border-color: #668ba2; animation: liveArrival 1.1s ease-out; }
-    .live-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-    .live-card-head strong { font-size: 20px; overflow-wrap: anywhere; }
     .live-tag { color: #c7dff2; background: #233540; padding: 2px 7px; border-radius: 4px; font-size: 14px; }
-    .live-numbers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
-    .live-numbers small { display: block; color: #a6babf; }
-    .live-numbers b { font-size: 16px; }
-    .live-evidence { padding: 9px 0; border-top: 1px solid #29404a; color: #d9bd80; font-size: 14px; }
-    .live-card .addr { overflow-wrap: anywhere; }
-    .live-grid .empty { grid-column: 1 / -1; }
-    @keyframes liveArrival { from { background: #253c4a; } to { background: #101b22; } }
-    @media (max-width: 1000px) { .live-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 620px) { .live-grid { grid-template-columns: 1fr; } }
-    @media (prefers-reduced-motion: reduce) { .live-card.new-sighting { animation: none; } }
+    .live-table-wrap { max-height: 460px; margin: 0 18px 18px; border: 1px solid var(--line); border-radius: 8px; }
+    .live-table tr.new-sighting td { background: #172b35; animation: liveArrival 1.1s ease-out; }
+    .live-table .links { margin-top: 0; }
+    .live-evidence { color: #d9bd80; }
+    @keyframes liveArrival { from { background: #2a4554; } to { background: #172b35; } }
+    @media (prefers-reduced-motion: reduce) { .live-table tr.new-sighting td { animation: none; } }
     .manage-body { padding: 12px 16px; border-top: 1px solid #244049; }
     .manage-body:empty { display: none; }
     .manage-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; align-items: center; }
@@ -718,7 +733,16 @@
         <span id="liveState" role="status" aria-live="polite" class="live-tag"></span>
       </div>
       <div id="liveMeta" class="live-meta"></div>
-      <div id="liveRows" class="live-grid"><div class="empty" data-i18n="preparing">准备中</div></div>
+      <div class="table compact-table-wrap live-table-wrap">
+        <table class="compact-table live-table">
+          <thead><tr>
+            <th data-i18n="tokenColumn">代币</th><th data-i18n="marketCapColumn">市值</th><th data-i18n="liquidityColumn">流动性</th>
+            <th data-i18n="liveVolume">1分钟成交额</th><th data-i18n="liveTrades">1分钟买 / 卖笔数</th><th data-i18n="liveSmart">GMGN标记聪明钱 / 持有人</th>
+            <th data-i18n="liveDeltaColumn">快照涨跌</th><th data-i18n="ageLabel">币龄</th><th data-i18n="auditStateColumn">核验状态</th><th data-i18n="actionsColumn">操作</th>
+          </tr></thead>
+          <tbody id="liveRows"><tr><td colspan="10" class="empty" data-i18n="preparing">准备中</td></tr></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="grid">
@@ -768,12 +792,17 @@
 
       <article class="panel wide">
         <div class="head"><h2 data-i18n="outcomeTitle">筛选后表现验证</h2><span data-i18n="shadowDisclaimer">影子观察，不代表可成交收益，也不作为交易指令</span></div>
-        <div class="outcome-grid">
-          <div class="outcome-item"><label data-i18n="trackedSamples">跟踪样本</label><strong id="outcomeTracked">0</strong><small data-i18n="historicalObservations">历史候选观察数</small></div>
-          <div class="outcome-item"><label data-i18n="result30m">30分钟结果</label><strong id="outcome30m" data-i18n="none">暂无</strong><small id="outcome30mCount" data-i18n="completedZero">完成0个样本</small></div>
-          <div class="outcome-item"><label data-i18n="result1h">1小时结果</label><strong id="outcome1h" data-i18n="none">暂无</strong><small id="outcome1hCount" data-i18n="completedZero">完成0个样本</small></div>
-          <div class="outcome-item"><label data-i18n="result2h">2小时结果</label><strong id="outcome2h" data-i18n="none">暂无</strong><small id="outcome2hCount" data-i18n="completedZero">完成0个样本</small></div>
-          <div class="outcome-item"><label data-i18n="result24h">24小时结果</label><strong id="outcome24h" data-i18n="none">暂无</strong><small id="outcome24hCount" data-i18n="completedZero">完成0个样本</small></div>
+        <div class="table compact-table-wrap">
+          <table class="compact-table outcome-table">
+            <thead><tr><th data-i18n="trackedSamples">跟踪样本</th><th data-i18n="result30m">30分钟结果</th><th data-i18n="result1h">1小时结果</th><th data-i18n="result2h">2小时结果</th><th data-i18n="result24h">24小时结果</th></tr></thead>
+            <tbody><tr>
+              <td><strong id="outcomeTracked" class="outcome-value">0</strong><small class="outcome-count" data-i18n="historicalObservations">历史候选观察数</small></td>
+              <td><strong id="outcome30m" class="outcome-value" data-i18n="none">暂无</strong><small id="outcome30mCount" class="outcome-count" data-i18n="completedZero">完成0个样本</small></td>
+              <td><strong id="outcome1h" class="outcome-value" data-i18n="none">暂无</strong><small id="outcome1hCount" class="outcome-count" data-i18n="completedZero">完成0个样本</small></td>
+              <td><strong id="outcome2h" class="outcome-value" data-i18n="none">暂无</strong><small id="outcome2hCount" class="outcome-count" data-i18n="completedZero">完成0个样本</small></td>
+              <td><strong id="outcome24h" class="outcome-value" data-i18n="none">暂无</strong><small id="outcome24hCount" class="outcome-count" data-i18n="completedZero">完成0个样本</small></td>
+            </tr></tbody>
+          </table>
         </div>
         <div id="outcomeGate" class="sample-gate" data-i18n="sampleGate">调参门槛：30分钟、2小时或24小时的完成样本均需满50个；未满50个只做观察，不用于调参。</div>
         <div id="outcomeCoverage" class="manage-body muted"></div>
@@ -868,6 +897,12 @@
       liveTrades: ['1分钟买 / 卖笔数','1分鐘買 / 賣筆數','1m buy / sell count','1分買い / 売り回数','1분 매수 / 매도 건수','عدد شراء / بيع بدقيقة'],
       liveSmart: ['GMGN标记聪明钱 / 持有人','GMGN標記聰明錢 / 持有人','GMGN-tagged smart / holders','GMGN分類SM / 保有者','GMGN 표시 스마트 / 보유자','ذكي بتصنيف GMGN / حاملوه'],
       liveDelta: ['两次快照涨跌（{seconds}秒）','兩次快照漲跌（{seconds}秒）','Snapshot price change ({seconds}s)','前回比（{seconds}秒）','스냅샷 가격 변화 ({seconds}초)','تغير السعر بين لقطتين ({seconds}ث)'],
+      liveDeltaColumn: ['快照涨跌','快照漲跌','Snapshot change','スナップショット変動','스냅샷 변동','تغير اللقطة'],
+      tokenColumn: ['代币','代幣','Token','トークン','토큰','الرمز'],
+      marketCapColumn: ['市值','市值','Market cap','時価総額','시가총액','القيمة السوقية'],
+      liquidityColumn: ['流动性','流動性','Liquidity','流動性','유동성','السيولة'],
+      actionsColumn: ['操作','操作','Actions','操作','작업','الإجراءات'],
+      auditStateColumn: ['核验状态','核驗狀態','Review status','検証状態','검증 상태','حالة التحقق'],
       liveUnreviewed: ['尚未深审；权限、LP与真人情况待核验','尚未深審；權限、LP與真人情況待核驗','Not audited: authorities, LP and organic activity unverified','詳細審査前：権限・LP・実活動は未検証','미감사: 권한, LP, 실제 활동 미검증','لم يُدقق: الصلاحيات وLP والنشاط الحقيقي غير متحقق'],
       liveAudit: ['排队核验','排隊核驗','Queue audit','審査を予約','감사 대기 등록','طلب تدقيق'],
       liveAuditQueued: ['已排队，按原安全门槛审核；不会下单','已排隊，按原安全門檻審核；不會下單','Queued under unchanged safety rules; no trading','同じ安全基準で審査待ち。取引しません','기존 안전 규칙으로 대기; 거래 없음','في الطابور وفق قواعد الأمان نفسها؛ بلا تداول'],
@@ -921,6 +956,13 @@
       coverageSingle: ['仅GMGN，需人工核验','僅GMGN，需人工核驗','GMGN only; manual verification','GMGNのみ・手動確認が必要','GMGN만 지원; 수동 검증 필요','GMGN فقط؛ يلزم التحقق اليدوي'],
       coverageLine: ['{window}：到期{eligible} / 完成{completed} / 缺失{missing} · 中位涨跌{median}','{window}：到期{eligible} / 完成{completed} / 缺失{missing} · 中位漲跌{median}','{window}: due {eligible} / complete {completed} / missing {missing} · median {median}','{window}: 対象{eligible} / 完了{completed} / 欠損{missing} · 中央値{median}','{window}: 도래 {eligible} / 완료 {completed} / 누락 {missing} · 중앙값 {median}','{window}: مستحق {eligible} / مكتمل {completed} / مفقود {missing} · الوسيط {median}'],
       rejectedCohort: ['拒绝组抽样对照','拒絕組抽樣對照','Sampled rejected cohort','除外群の抽出比較','제외 표본 비교','عينة المجموعة المرفوضة'],
+      passedCohort: ['筛选通过组','篩選通過組','Screened-in cohort','通過グループ','선별 통과군','مجموعة المقبولين'],
+      cohortColumn: ['样本组','樣本組','Cohort','グループ','표본군','المجموعة'],
+      windowColumn: ['周期','週期','Horizon','期間','기간','الأفق'],
+      eligibleColumn: ['应采样','應採樣','Eligible','対象','대상','مؤهل'],
+      completedColumn: ['已完成','已完成','Completed','完了','완료','مكتمل'],
+      missingColumn: ['缺失','缺失','Missing','欠損','누락','مفقود'],
+      medianColumn: ['中位收益','中位收益','Median return','中央値収益','중앙 수익률','العائد الوسيط'],
       newCandidateAlert: ['发现新候选，请人工复核','發現新候選，請人工複核','New candidate; review manually','新候補・手動確認が必要','새 후보 발견; 수동 확인 필요','مرشح جديد؛ راجعه يدويًا'],
       riskAlert: ['风险或证据状态恶化，请重新复核','風險或證據狀態惡化，請重新複核','Risk or evidence worsened; review again','リスク・証拠状態が悪化。再確認してください','위험 또는 근거 상태 악화; 재검토 필요','تدهورت المخاطر أو الأدلة؛ راجع مجددًا'],
       failureAlert: ['扫描长时间未成功，请检查连接','掃描長時間未成功，請檢查連線','No successful scan for an extended period; check connectivity','スキャン成功が長時間ありません。接続を確認してください','장시간 스캔 성공 없음; 연결 확인 필요','لم ينجح المسح منذ فترة؛ تحقق من الاتصال'],
@@ -1803,7 +1845,7 @@
       const goPlusTone = secondarySecurity.verdict === 'FATAL' ? 'bad' : secondarySecurity.verdict === 'NO_FATAL_FLAGS' ? 'good' : 'warn';
 
       return '<tr class="' + freshness.className + '">' +
-        '<td><span class="symbol">' + escapeHtml(row.symbol || '?') + '</span><div>' + escapeHtml(row.name || '') + '</div><div class="addr mono">' + escapeHtml(address.slice(0, 8)) + '…' + escapeHtml(address.slice(-6)) + '</div>' + actionLinks(row) + '</td>' +
+        '<td><span class="symbol">' + escapeHtml(row.symbol || '?') + '</span><div>' + escapeHtml(row.name || '') + '</div><div class="addr mono">' + escapeHtml(address.slice(0, 8)) + '…' + escapeHtml(address.slice(-6)) + '</div><details class="action-menu"><summary>' + escapeHtml(t('actionsColumn')) + '</summary>' + actionLinks(row) + '</details></td>' +
         '<td class="mono">' + formatMoney(row.marketCap) + '<br><span class="muted">' + escapeHtml(t('liquidity', { value: formatMoney(security.liquidity !== undefined ? security.liquidity : row.liquidity) })) + '</span><br><span class="' + (dexStatus === 'OK' ? 'good' : 'warn') + '">' + escapeHtml(dexLabel) + '</span></td>' +
         '<td>' + escapeHtml(ageLabel) + '<div class="audit-age ' + freshness.tone + '">' + escapeHtml(freshness.label) + '</div></td>' +
         '<td class="stack">' + checkLine(checks.openSource, t('openSource'), waitingForRecheck) + checkLine(checks.ownerRenounced, permissionLabel, waitingForRecheck) + '<span class="' + goPlusTone + '">' + escapeHtml(goPlusLabel) + '</span></td>' +
@@ -1814,12 +1856,12 @@
         '<td class="stack">' + (earlyExit ? skipped : checkLine(knownAtMost(wallets.botHoldRate, policy.maxBotHoldRate), t('botsLabel', { value: formatPercent(wallets.botHoldRate) }), waitingForRecheck) + checkLine(knownAtMost(wallets.linkedHoldRate, policy.maxLinkedHoldRate), t('linkedLabel', { value: formatPercent(wallets.linkedHoldRate) }), waitingForRecheck)) + '</td>' +
         '<td class="' + (observation.pass ? 'good' : 'bad') + '">' + (earlyExit ? skipped : escapeHtml(safeMessage(observation.reason, t('marketUnknown'))) + '<br><span class="muted">' + escapeHtml(t('return5m', { value: formatPercent(observation.return5m) })) + '<br>' + escapeHtml(t('maxDrawdown', { value: formatPercent(observation.maxDrawdown) })) + '</span>') + '</td>' +
         '<td><span class="warn">' + escapeHtml(t('manualReview')) + '</span><br><span class="muted">' + escapeHtml(officialStatus) + '</span></td>' +
-        '<td>' + statusBadge(row) + '<div class="reasons">' + reasons + '</div><div class="review-actions">' +
+        '<td>' + statusBadge(row) + '<div class="reasons">' + reasons + '</div><details class="action-menu"><summary>' + escapeHtml(t('actionsColumn')) + '</summary><div class="review-actions">' +
           '<button type="button" class="mini-button pass ' + (passActive ? 'active' : '') + '" data-action="pass" data-address="' + encodedAddress + '" ' + (canPass ? '' : 'disabled title="' + escapeHtml(passDisabledReason) + '"') + '>' + escapeHtml(passActive ? t('cancelPass') : t('manualPass')) + '</button>' +
           '<button type="button" class="mini-button ignore ' + (ignoreActive ? 'active' : '') + '" data-action="ignore" data-address="' + encodedAddress + '">' + escapeHtml(ignoreActive ? t('cancelIgnore') : t('ignoreAction')) + '</button>' +
           '<button type="button" class="mini-button" data-action="favorite" data-address="' + encodedAddress + '">' + escapeHtml(t(annotationFor(row.chain || activeChain(lastData), row.address).favorite ? 'unfavorite' : 'favorite')) + '</button>' +
           '<button type="button" class="mini-button" data-action="note" data-address="' + encodedAddress + '">' + escapeHtml(t('editNote')) + '</button>' +
-        '</div></td>' +
+        '</div></details></td>' +
       '</tr>';
     }
 
@@ -1846,7 +1888,7 @@
 
       const body = rows.map(function (row) { return candidateRow(row, policy, now); }).join('');
       byId('candidates').innerHTML =
-        '<div class="table"><table><thead><tr>' +
+        '<div class="table compact-table-wrap"><table class="compact-table audit-table"><thead><tr>' +
         '<th>' + escapeHtml(t('thToken')) + '</th><th>' + escapeHtml(t('thMarket')) + '</th><th>' + escapeHtml(t('thAge')) + '</th><th>' + escapeHtml(t('thContract')) + '</th><th>' + escapeHtml(t('thLp')) + '</th><th>' + escapeHtml(t('thHoneypot')) + '</th><th>' + escapeHtml(t('thRisk')) + '</th><th>' + escapeHtml(t('thOrdinary')) + '</th><th>' + escapeHtml(t('thBots')) + '</th><th>' + escapeHtml(t('thPrice')) + '</th><th>' + escapeHtml(t('thX')) + '</th><th>' + escapeHtml(t('thConclusion')) + '</th>' +
         '</tr></thead><tbody>' + body + '</tbody></table></div>';
     }
@@ -2090,7 +2132,7 @@
       const setReturn = function (id, value) {
         const element = byId(id);
         element.textContent = formatSignedPercent(value);
-        element.className = value === undefined || value === null ? 'muted' : Number(value) > 0 ? 'good' : Number(value) < 0 ? 'bad' : '';
+        element.className = 'outcome-value ' + (value === undefined || value === null ? 'muted' : Number(value) > 0 ? 'good' : Number(value) < 0 ? 'bad' : '');
       };
       byId('outcomeTracked').textContent = number(summary.tracked, number(summary.total)).toLocaleString(currentLocale);
       setReturn('outcome30m', summary.averageReturn30m);
@@ -2110,15 +2152,44 @@
         ? t('gateReady', { windows: readyWindows.join(currentLocale === 'zh-CN' || currentLocale === 'zh-TW' ? '、' : ', ') })
         : t('sampleGate');
       const coverage = summary.coverage || {};
-      byId('outcomeCoverage').innerHTML = ['passed', 'rejected'].map(function (cohort) {
+      const coverageBody = ['passed', 'rejected'].map(function (cohort) {
         const rows = coverage[cohort] || {};
-        return (cohort === 'rejected' ? '<strong>' + escapeHtml(t('rejectedCohort')) + '</strong>' : '')
-          + ['m30', 'h2', 'h24'].map(function (key) {
+        return ['m30', 'h2', 'h24'].map(function (key) {
             const row = rows[key] || {};
-            return '<div>' + escapeHtml(t('coverageLine', { window: {m30:t('window30m'),h2:t('window2h'),h24:t('window24h')}[key],
-              eligible: formatCount(row.eligible || 0), completed: formatCount(row.completed || 0), missing: formatCount(row.missing || 0), median: formatSignedPercent(row.median) })) + '</div>';
+            return '<tr><td>' + escapeHtml(t(cohort === 'passed' ? 'passedCohort' : 'rejectedCohort')) + '</td>'
+              + '<td>' + escapeHtml({m30:t('window30m'),h2:t('window2h'),h24:t('window24h')}[key]) + '</td>'
+              + '<td class="mono">' + escapeHtml(formatCount(row.eligible || 0)) + '</td>'
+              + '<td class="mono">' + escapeHtml(formatCount(row.completed || 0)) + '</td>'
+              + '<td class="mono">' + escapeHtml(formatCount(row.missing || 0)) + '</td>'
+              + '<td class="mono">' + escapeHtml(formatSignedPercent(row.median)) + '</td></tr>';
           }).join('');
       }).join('');
+      byId('outcomeCoverage').innerHTML = '<div class="table compact-table-wrap"><table class="compact-table coverage-table"><thead><tr>'
+        + '<th>' + escapeHtml(t('cohortColumn')) + '</th><th>' + escapeHtml(t('windowColumn')) + '</th><th>' + escapeHtml(t('eligibleColumn')) + '</th>'
+        + '<th>' + escapeHtml(t('completedColumn')) + '</th><th>' + escapeHtml(t('missingColumn')) + '</th><th>' + escapeHtml(t('medianColumn')) + '</th>'
+        + '</tr></thead><tbody>' + coverageBody + '</tbody></table></div>';
+    }
+
+    function liveTableRow(row, options) {
+      const address = String(row.address || '');
+      const changeTone = row.priceDelta > 0 ? 'good' : row.priceDelta < 0 ? 'bad' : '';
+      const links = actionLinks({ address: address, chain: row.chain, symbol: row.symbol, info: { website: row.website, twitter: row.twitter } });
+      const auditButton = '<button class="mini-button" type="button" data-live-audit="' + encodeURIComponent(address) + '" '
+        + (options.canAudit && !options.isQueued ? '' : 'disabled ') + 'title="' + escapeHtml(t('liveAuditScope')) + '">'
+        + escapeHtml(options.isQueued ? t('liveAuditQueued') : t('liveAudit')) + '</button>';
+      return '<tr class="' + (options.isNew ? 'new-sighting' : '') + '">'
+        + '<td><div class="compact-token"><span><span class="symbol">' + escapeHtml(row.symbol || '?') + '</span> <span class="live-tag">' + escapeHtml(options.isNew ? t('liveNew') : '1m') + '</span></span><span class="muted">' + escapeHtml(row.name || '') + '</span>'
+        + '<span class="addr mono">' + escapeHtml(address.slice(0, 8) + '…' + address.slice(-6)) + '</span></div></td>'
+        + '<td class="mono">' + escapeHtml(formatMoney(row.marketCap)) + '</td>'
+        + '<td class="mono">' + escapeHtml(formatMoney(row.liquidity)) + '</td>'
+        + '<td class="mono">' + escapeHtml(formatMoney(row.volume1m)) + '</td>'
+        + '<td class="mono">' + escapeHtml(formatCount(row.buys1m) + ' / ' + formatCount(row.sells1m)) + '</td>'
+        + '<td class="mono">' + escapeHtml(formatCount(row.smartMoney) + ' / ' + formatCount(row.holders)) + '</td>'
+        + '<td class="mono ' + changeTone + '">' + escapeHtml(formatSignedPercent(row.priceDelta)) + '<small class="outcome-count">' + escapeHtml(t('liveDelta', { seconds: row.deltaWindowMs ? Math.round(row.deltaWindowMs / 1000) : '—' })) + '</small></td>'
+        + '<td class="mono">' + escapeHtml(formatDuration(Math.max(0, options.now - Number(row.createdAt || 0) * 1000))) + '</td>'
+        + '<td class="live-evidence">' + escapeHtml(options.reviewText) + '</td>'
+        + '<td class="compact-actions"><details class="action-menu"><summary>' + escapeHtml(t('actionsColumn')) + '</summary>' + links + auditButton + '</details></td>'
+        + '</tr>';
     }
 
     function renderLive() {
@@ -2145,6 +2216,7 @@
       const fingerprint = JSON.stringify([rows, chain, currentLocale, stale, liveOffline, mode, query, enabledChains, [...liveQueued], Math.floor(Date.now() / 60000)]);
       if (fingerprint === liveFingerprint) return;
       liveFingerprint = fingerprint;
+      const renderedAt = Date.now();
       byId('liveRows').innerHTML = rows.map(function (row) {
         const isNew = row.newAt && Date.now() - row.newAt < 120000;
         const audit = row.audit;
@@ -2154,21 +2226,8 @@
         const queued = liveQueued.get(row.chain + ':' + row.address);
         const isQueued = queued && (!audit || audit.at < queued);
         const canAudit = !stale && !liveOffline && row.auditEligible && enabledChains.includes(row.chain) && !(audit && audit.status === 'HARD_REJECT');
-        const links = actionLinks({ address:row.address, chain:row.chain, symbol:row.symbol, info:{ website:row.website, twitter:row.twitter } });
-        const unit = function (label, value, tone) { return '<div><small>' + escapeHtml(label) + '</small><b class="mono ' + (tone || '') + '">' + escapeHtml(value) + '</b></div>'; };
-        return '<article class="live-card' + (isNew ? ' new-sighting' : '') + '"><div class="live-card-head"><strong>' + escapeHtml(row.symbol) + '</strong>'
-          + '<span class="live-tag">' + escapeHtml(isNew ? t('liveNew') : '1m') + '</span></div><div class="muted">' + escapeHtml(row.name) + '</div>'
-          + '<div class="addr mono">' + escapeHtml(row.address.slice(0,8) + '…' + row.address.slice(-6)) + '</div>'
-          + '<div class="live-numbers">' + unit('MC / LP', formatMoney(row.marketCap) + ' / ' + formatMoney(row.liquidity))
-          + unit(t('liveVolume'), formatMoney(row.volume1m))
-          + unit(t('liveTrades'), formatCount(row.buys1m) + ' / ' + formatCount(row.sells1m))
-          + unit(t('liveSmart'), formatCount(row.smartMoney) + ' / ' + formatCount(row.holders))
-          + unit(t('liveDelta', {seconds:row.deltaWindowMs ? Math.round(row.deltaWindowMs/1000) : '—'}), formatSignedPercent(row.priceDelta), row.priceDelta > 0 ? 'good' : row.priceDelta < 0 ? 'bad' : '')
-          + unit(t('ageLabel'), formatDuration(Math.max(0, Date.now() - row.createdAt*1000))) + '</div>'
-          + '<div class="live-evidence">' + escapeHtml(reviewText) + '</div>' + links
-          + '<button class="mini-button" type="button" data-live-audit="' + encodeURIComponent(row.address) + '" '
-          + (canAudit && !isQueued ? '' : 'disabled ') + 'title="' + escapeHtml(t('liveAuditScope')) + '">' + escapeHtml(isQueued ? t('liveAuditQueued') : t('liveAudit')) + '</button></article>';
-      }).join('') || '<div class="empty">' + escapeHtml(data && data.lastSuccessAt ? t('liveEmpty') : t(status)) + '</div>';
+        return liveTableRow(row, { now: renderedAt, isNew: isNew, reviewText: reviewText, canAudit: canAudit, isQueued: isQueued });
+      }).join('') || '<tr><td colspan="10" class="empty">' + escapeHtml(data && data.lastSuccessAt ? t('liveEmpty') : t(status)) + '</td></tr>';
     }
 
     async function refreshLive() {

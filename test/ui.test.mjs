@@ -156,6 +156,84 @@ test('看板包含新鲜度、运行进度和动态降级支持', () => {
   assert.match(html, /prefers-reduced-motion/);
 });
 
+test('所有结果区使用紧凑语义表格而非即时榜卡片', () => {
+  assert.match(html, /<table class="compact-table live-table">[\s\S]*?<tbody id="liveRows"/);
+  assert.match(html, /<table class="compact-table outcome-table">[\s\S]*?id="outcomeTracked"/);
+  assert.match(html, /<table class="compact-table audit-table">/);
+  assert.doesNotMatch(html, /class="live-grid"|class="live-card/);
+});
+
+test('即时发现的每个币渲染为一行并保留审计和外链操作', () => {
+  const start = html.indexOf('function liveTableRow');
+  const end = html.indexOf('function renderLive', start);
+  assert.ok(start >= 0 && end > start, '应提供独立的即时榜表格行渲染器');
+  const context = {
+    encodeURIComponent,
+    escapeHtml: value => String(value ?? ''),
+    t: (key, values) => values && values.seconds !== undefined ? key + ':' + values.seconds : key,
+    formatMoney: value => '$' + value,
+    formatCount: value => String(value),
+    formatSignedPercent: value => String(value),
+    formatDuration: value => String(value),
+    actionLinks: () => '<div class="links">links</div>'
+  };
+  vm.runInNewContext(html.slice(start, end) + '\nthis.renderRow = liveTableRow;', context);
+  const rendered = context.renderRow({
+    address: '1234567890abcdef', symbol: 'DOG', name: 'Dog coin', marketCap: 12000,
+    liquidity: 5000, volume1m: 900, buys1m: 8, sells1m: 3, smartMoney: 2,
+    holders: 80, priceDelta: 0.12, deltaWindowMs: 15000, createdAt: 100, chain: 'sol'
+  }, { now: 200000, isNew: true, reviewText: '待核验', canAudit: true, isQueued: false });
+  assert.match(rendered, /^<tr class="new-sighting">/);
+  assert.equal((rendered.match(/<td/g) || []).length, 10);
+  assert.match(rendered, /data-live-audit="1234567890abcdef"/);
+  assert.match(rendered, /class="links"/);
+  assert.match(rendered, />liveNew</);
+  assert.doesNotMatch(rendered, /<article|live-card/);
+  const ordinary = context.renderRow({
+    address: '1234567890abcdef', symbol: 'DOG', name: 'Dog coin', createdAt: 100, chain: 'sol'
+  }, { now: 200000, isNew: false, reviewText: '待核验', canAudit: false, isQueued: false });
+  assert.match(ordinary, />1m</);
+});
+
+test('即时榜表头不显示动态秒数占位符', () => {
+  const dictionarySource = html.match(/const messages = (\{[\s\S]*?\r?\n    \});\r?\n\r?\n    let currentLocale/);
+  assert.ok(dictionarySource);
+  const messages = vm.runInNewContext('(' + dictionarySource[1] + ')');
+  assert.match(html, /<th data-i18n="tokenColumn">代币<\/th>/);
+  assert.match(html, /data-i18n="liveDeltaColumn"/);
+  assert.ok(messages.liveDeltaColumn.every(value => !value.includes('{')));
+});
+
+test('表现收益刷新只切换色调并保留紧凑数值样式', () => {
+  const start = html.indexOf('function renderOutcomes');
+  const end = html.indexOf('function liveTableRow', start);
+  const elements = new Proxy({}, { get: (target, key) => target[key] ||= { textContent: '', className: '', innerHTML: '' } });
+  const context = {
+    byId: id => elements[id],
+    formatSignedPercent: value => String(value),
+    formatCount: value => String(value),
+    number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
+    t: key => key,
+    escapeHtml: value => String(value ?? ''),
+    currentLocale: 'zh-CN'
+  };
+  vm.runInNewContext(html.slice(start, end) + '\nthis.renderOutcomesForTest = renderOutcomes;', context);
+  context.renderOutcomesForTest({ outcomeSummary: { tracked: 1, averageReturn30m: 0.1, coverage: {} } });
+  assert.match(elements.outcome30m.className, /\boutcome-value\b/);
+  assert.match(elements.outcome30m.className, /\bgood\b/);
+});
+
+test('样本覆盖对照与深审操作也使用紧凑表格交互', () => {
+  const outcomeStart = html.indexOf('function renderOutcomes');
+  const outcomeEnd = html.indexOf('function liveTableRow', outcomeStart);
+  const candidateStart = html.indexOf('function candidateRow');
+  const candidateEnd = html.indexOf('function renderCandidates', candidateStart);
+  assert.match(html.slice(outcomeStart, outcomeEnd), /class="compact-table coverage-table"/);
+  assert.match(html.slice(candidateStart, candidateEnd), /class="action-menu"/);
+  assert.match(html.slice(candidateStart, candidateEnd), /data-action="pass"/);
+  assert.match(html.slice(candidateStart, candidateEnd), /data-action="copy"|actionLinks\(row\)/);
+});
+
 test('候选表明确展示GoPlus与DexScreener交叉验证', () => {
   assert.match(html, /GoPlus一票否决/);
   assert.match(html, /GoPlus未见致命项/);
