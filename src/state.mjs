@@ -35,6 +35,7 @@ function defaultState() {
       tracked: 0, completed5m: 0, completed15m: 0, completed30m: 0,
       completed1h: 0, completed2h: 0, completed6h: 0, completed24h: 0
     },
+    factorLabSummary: null,
     sourceHealth: {},
     events: []
   };

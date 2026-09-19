@@ -10,6 +10,7 @@ test('manual rescan requests run immediately or queue behind the active cycle', 
   scanner.running = true;
   scanner.rescanRequested = false;
   assert.deepEqual(scanner.requestCycle(), { queued: true });
+  assert.deepEqual(scanner.requestCycle(), { queued: true });
   assert.equal(scanner.rescanRequested, true);
 
   let cycles = 0;

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GmgnClient, discoveryRequestArgs, gmgnChildEnvironment, normalizeList, translateGmgnError } from '../src/gmgn.mjs';
+import { defaultPolicy, runtimePolicy } from '../src/policy.mjs';
 
 test('normalizes nested GMGN list shapes without guessing token fields', () => {
   assert.deepEqual(normalizeList({ data: { rank: [{ address: 'a' }] } }), [{ address: 'a' }]);
@@ -22,6 +23,24 @@ test('discovery uses the duration form accepted by both GMGN market commands', (
     assert.equal(args[maxAgeIndex + 1], '10080m');
     assert.equal(args.includes('7d'), false);
     assert.deepEqual(args.slice(args.indexOf('--chain'), args.indexOf('--chain') + 2), ['--chain', 'bsc']);
+  }
+});
+
+test('discovery query consumes the immutable policy snapshot', () => {
+  const policy = defaultPolicy();
+  policy.discovery.minMarketCap = 12345;
+  policy.discovery.maxMarketCap = 234567;
+  policy.discovery.minLiquidity = 4567;
+  policy.discovery.minAgeMinutes = 9;
+  policy.discovery.maxAgeMinutes = 321;
+  const requests = discoveryRequestArgs('bsc', runtimePolicy(policy));
+  for (const args of Object.values(requests)) {
+    const value = flag => args[args.indexOf(flag) + 1];
+    assert.equal(value('--min-marketcap'), '12345');
+    assert.equal(value('--max-marketcap'), '234567');
+    assert.equal(value('--min-liquidity'), '4567');
+    assert.equal(value('--min-created'), '9m');
+    assert.equal(value('--max-created'), '321m');
   }
 });
 

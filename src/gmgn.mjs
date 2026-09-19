@@ -114,10 +114,14 @@ export function translateGmgnError(error) {
   return translated;
 }
 
-export function discoveryRequestArgs(chain = 'robinhood') {
+export function discoveryRequestArgs(chain = 'robinhood', settings = {}) {
+  const minAgeMinutes = Math.floor((settings.minAgeSec ?? 300) / 60);
+  const maxAgeMinutes = Math.floor((settings.maxAgeSec ?? 604800) / 60);
   const common = [
-    '--chain', chain, '--min-created', '5m', '--max-created', '10080m',
-    '--min-marketcap', '10000', '--max-marketcap', '150000', '--min-liquidity', '3000'
+    '--chain', chain, '--min-created', `${minAgeMinutes}m`, '--max-created', `${maxAgeMinutes}m`,
+    '--min-marketcap', String(settings.discoveryMinMarketCap ?? 10000),
+    '--max-marketcap', String(settings.discoveryMaxMarketCap ?? 150000),
+    '--min-liquidity', String(settings.minLiquidity ?? 3000)
   ];
   return {
     trenches: ['market', 'trenches', '--type', 'completed', '--limit', '80', '--filter-preset', 'safe', '--sort-by', 'volume_1h', '--direction', 'desc', ...common, '--raw'],
@@ -278,8 +282,8 @@ export class GmgnClient {
     } finally { clearTimeout(timer); }
   }
 
-  async discover(chain = 'robinhood') {
-    const requests = discoveryRequestArgs(chain);
+  async discover(chain = 'robinhood', settings = {}) {
+    const requests = discoveryRequestArgs(chain, settings);
     const [trenches, trending] = await Promise.allSettled([
       this.run(requests.trenches),
       this.run(requests.trending)
