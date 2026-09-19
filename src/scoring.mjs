@@ -167,8 +167,21 @@ export function discoveryScreen(row, config, nowSec = Date.now() / 1000) {
   const volume = num(first(row.volume_1h, row.volume, row.volume_24h));
   const holders = num(row.holder_count);
   const signals = discoverySignalView(row);
-  const score = (priorityBand ? 35 : 10) + Math.min(25, liquidity / 1000) + Math.min(20, volume / 1000)
-    + Math.min(20, holders / 10) + signals.scoreAdjustment;
+  const weights = {
+    priorityBand: 35, ordinaryBand: 10,
+    liquidityCap: 25, liquidityDivisor: 1000,
+    volumeCap: 20, volumeDivisor: 1000,
+    holdersCap: 20, holdersDivisor: 10,
+    smartTwo: 7, smartThree: 14, kolPenalty: 4,
+    ...(config.factorWeights || {})
+  };
+  const smartAdjustment = signals.smartDegenCount >= 3 ? weights.smartThree
+    : signals.smartDegenCount === 2 ? weights.smartTwo : 0;
+  const score = (priorityBand ? weights.priorityBand : weights.ordinaryBand)
+    + Math.min(weights.liquidityCap, liquidity / Math.max(1, weights.liquidityDivisor))
+    + Math.min(weights.volumeCap, volume / Math.max(1, weights.volumeDivisor))
+    + Math.min(weights.holdersCap, holders / Math.max(1, weights.holdersDivisor))
+    + smartAdjustment - (signals.kolOnly ? weights.kolPenalty : 0);
   return {
     pass: reasons.length === 0, reasons, priorityBand, score, mc, liquidity, ageSec, signals,
     unknownFields: [

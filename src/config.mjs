@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { defaultPolicy, runtimePolicy } from './policy.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(HERE, '..');
@@ -10,22 +11,14 @@ function boundedInteger(value, fallback, minimum, maximum) {
 }
 
 export const config = Object.freeze({
+  ...runtimePolicy(defaultPolicy()),
   chain: 'robinhood',
   supportedChains: Object.freeze(['sol', 'bsc', 'base', 'eth', 'robinhood', 'arc', 'stable']),
   port: boundedInteger(process.env.RADAR_PORT, 3791, 1024, 65_535),
-  scanIntervalMs: boundedInteger(process.env.SCAN_INTERVAL_MS, 120_000, 30_000, 30 * 60_000),
-  maxDeepAuditsPerCycle: boundedInteger(process.env.MAX_DEEP_AUDITS_PER_CYCLE, 6, 1, 12),
   auditCycleBudgetMs: 80_000,
   outcomeReadsPerCycle: 4,
+  factorLabReadsPerCycle: 4,
   xReviewMode: 'manual',
-  minAgeSec: 5 * 60,
-  maxAgeSec: 7 * 86400,
-  discoveryMinMarketCap: 10_000,
-  discoveryMaxMarketCap: 150_000,
-  priorityMinMarketCap: 20_000,
-  priorityMaxMarketCap: 80_000,
-  minLiquidity: 3_000,
-  strictLiquidity: 8_000,
   maxRugRatio: 0.20,
   maxTop10Rate: 0.30,
   maxInsiderRate: 0.15,

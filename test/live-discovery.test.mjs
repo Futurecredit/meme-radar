@@ -11,6 +11,7 @@ import { executeReadOnly } from '../src/gmgn-readonly-worker.mjs';
 import { Scanner } from '../src/scanner.mjs';
 import { RadarState } from '../src/state.mjs';
 import { createServer } from '../src/server.mjs';
+import { defaultPolicy } from '../src/policy.mjs';
 
 const now = 1800000000000;
 const address = '0x' + '1'.repeat(40);
@@ -27,6 +28,18 @@ test('live requests use a one-minute read with no deep-audit or trading calls', 
   assert.equal(called[2].min_created,'5m'); assert.equal(called[2].limit,100);
   await assert.rejects(executeReadOnly(client,['market','trending','--chain','sol','--interval','0m']));
   await assert.rejects(executeReadOnly(client,['swap','buy','--chain','sol']));
+});
+
+test('live query and local filter consume the same live policy values', () => {
+  const policy = defaultPolicy();
+  policy.live = { minMarketCap: 40000, maxMarketCap: 60000, minLiquidity: 12000, minAgeMinutes: 15 };
+  const args = liveRequestArgs('bsc', policy);
+  const value = flag => args[args.indexOf(flag) + 1];
+  assert.equal(value('--min-marketcap'), '40000');
+  assert.equal(value('--max-marketcap'), '60000');
+  assert.equal(value('--min-liquidity'), '12000');
+  assert.equal(value('--min-created'), '15m');
+  assert.equal(normalizeLiveRows([token(1), token(2, { market_cap: 39000 }), token(3, { liquidity: 11999 }), token(4, { creation_timestamp: now / 1000 - 899 })], 'bsc', [], now, false, policy).length, 1);
 });
 
 test('quick discovery drops explicit hazards and newborns, preserves unknowns and case-sensitive Solana addresses', () => {

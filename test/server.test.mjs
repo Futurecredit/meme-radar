@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { createServer, healthSnapshot, isTrustedLocalRequest, toPublicStatus } from '../src/server.mjs';
@@ -135,6 +138,19 @@ function dispatch(server, { method = 'GET', pathName = '/', headers = {}, body =
     Promise.resolve(server.listeners('request')[0](req, res)).catch(reject);
   });
 }
+
+test('CSP hashes inline content after browser CRLF normalization', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'radar-csp-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const source = '<!doctype html>\r\n<style>\r\nbody { color: red; }\r\n</style>\r\n<script>\r\nwindow.ready = true;\r\n</script>';
+  fs.writeFileSync(path.join(dir, 'index.html'), source);
+  const server = createServer({ state: { value: {} }, settings: { ...settings, publicDir: dir } });
+  const response = await dispatch(server);
+  const styleDigest = crypto.createHash('sha256').update('\nbody { color: red; }\n').digest('base64');
+  const scriptDigest = crypto.createHash('sha256').update('\nwindow.ready = true;\n').digest('base64');
+  assert.match(response.headers['content-security-policy'], new RegExp(`style-src[^;]*'sha256-${styleDigest.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  assert.match(response.headers['content-security-policy'], new RegExp(`script-src[^;]*'sha256-${scriptDigest.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+});
 
 test('HTTP handler enforces local boundary, strong CSP and only safe local configuration writes', async () => {
   let switchedTo = '';

@@ -15,6 +15,7 @@ import { GmgnConnection } from '../src/gmgn-connection.mjs';
 import { RadarState } from '../src/state.mjs';
 import { Scanner, reviewRevision } from '../src/scanner.mjs';
 import { createServer } from '../src/server.mjs';
+import { defaultPolicy } from '../src/policy.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const address = '0x' + '1'.repeat(40);
@@ -159,6 +160,27 @@ test('scanner batch audits multiple candidates, saves per-chain history, and mul
   assert.equal(scanner.pendingChain,'');
 });
 
+test('an in-flight scan keeps one policy snapshot while a saved change applies next cycle', async t => {
+  const dir=temp(t); const state=new RadarState(dir); const controls=new RadarControls(dir,config.supportedChains,'bsc');
+  state.value.activeChain='bsc';
+  const initial=defaultPolicy(); initial.discovery.maxMarketCap=100000; controls.setPolicy(initial);
+  let observedMax=0, audited=0;
+  const gmgn={keyEpoch:0,configured:async()=>true,discover:async(_chain,settings)=>{
+    observedMax=settings.discoveryMaxMarketCap;
+    const changed=defaultPolicy(); changed.discovery.maxMarketCap=40000; changed.discovery.priorityMaxMarketCap=40000;
+    controls.setPolicy(changed);
+    return [{address, symbol:'TEST',price:1,market_cap:50000,liquidity:10000,creation_timestamp:Date.now()/1000-1000,
+      rug_ratio:.1,bundler_rate:.1,rat_trader_amount_rate:.1,is_wash_trading:false,is_honeypot:0}];
+  },audit:async()=>{audited++;return {info:{price:{price:'1'}},security:{owner_renounced:'no'},pool:{},holders:[],traders:[],candles:[],_meta:{complete:true}};}};
+  const scanner=new Scanner({gmgn,state,controls,settings:config});
+  await scanner.cycle();
+  // Discovery now queries a fixed 2x experimental envelope derived from the
+  // immutable cycle snapshot. A mid-cycle change to 40k would have yielded 80k.
+  assert.equal(observedMax,200000);
+  assert.equal(audited,1);
+  assert.equal(controls.policy().discovery.maxMarketCap,40000);
+});
+
 function dispatch(server, method, route, body, origin=true) {
   return new Promise((resolve,reject)=>{
     const req=Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []);
@@ -191,4 +213,26 @@ test('settings endpoints validate origin/schema; view/export exposes whitelisted
   assert.equal(skipped.deep.sellability.distinctSellers,null);
   assert.doesNotMatch(JSON.stringify(exported),/do-not-leak/);
   assert.equal((await dispatch(server,'GET','/api/status?chain=not-a-chain')).status,400);
+});
+
+test('policy API validates exact schema, persists/reset values, queues one rescan and exports no credentials', async t=>{
+  const dir=temp(t), controls=new RadarControls(dir,config.supportedChains,'bsc');
+  const state={value:{activeChain:'bsc',status:'RUNNING',supportedChains:config.supportedChains,candidates:[],chainStates:{},gmgnApiKey:'gmgn_do-not-leak'}};
+  let scans=0;
+  const server=createServer({state,controls,settings:{...config,publicDir:path.join(root,'public')},requestPolicyScan:()=>{scans++;}});
+  const policy=defaultPolicy(); policy.scan.intervalSeconds=45;
+  const saved=await dispatch(server,'POST','/api/policy',{policy});
+  assert.equal(saved.status,200); assert.equal(saved.body.saved,true); assert.equal(saved.body.policy.scan.intervalSeconds,45); assert.equal(scans,1);
+  const invalid={...policy,unknown:true};
+  const rejected=await dispatch(server,'POST','/api/policy',{policy:invalid});
+  assert.equal(rejected.status,400); assert.equal(rejected.body.error,'invalid_policy'); assert.equal(rejected.body.fields.unknown,'unknown_field');
+  assert.equal(controls.policy().scan.intervalSeconds,45); assert.equal(scans,1);
+  assert.equal((await dispatch(server,'POST','/api/policy',{policy},false)).status,403);
+  assert.equal((await dispatch(server,'POST','/api/policy',{policy:{padding:'x'.repeat(9000)}})).status,413);
+  const reset=await dispatch(server,'POST','/api/policy-reset',{});
+  assert.equal(reset.body.policy.scan.intervalSeconds,120); assert.equal(scans,2);
+  const status=await dispatch(server,'GET','/api/status');
+  const exported=await dispatch(server,'GET','/api/export');
+  assert.deepEqual(status.body.policy,defaultPolicy()); assert.deepEqual(exported.body.policy,defaultPolicy());
+  assert.doesNotMatch(JSON.stringify(exported.body),/gmgn_do-not-leak/);
 });

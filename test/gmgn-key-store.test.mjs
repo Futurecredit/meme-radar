@@ -7,6 +7,11 @@ import { GmgnKeyStore, normalizeGmgnApiKey } from '../src/gmgn-key-store.mjs';
 
 const validKey = () => `gmgn_${'a1'.repeat(16)}`;
 
+function assertPrivateMode(file, expected) {
+  // Windows exposes NTFS permissions through ACLs rather than POSIX mode bits.
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, expected);
+}
+
 test('GMGN key store validates the key and keeps it in a private state file', () => {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'meme-radar-key-'));
   const stateDir = path.join(temporaryRoot, 'state');
@@ -17,8 +22,8 @@ test('GMGN key store validates the key and keeps it in a private state file', ()
     assert.equal(store.configured(), true);
     assert.equal(store.get(), key);
     assert.equal(fs.readFileSync(store.file, 'utf8'), `${key}\n`);
-    assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
-    assert.equal(fs.statSync(store.file).mode & 0o777, 0o600);
+    assertPrivateMode(stateDir, 0o700);
+    assertPrivateMode(store.file, 0o600);
 
     assert.throws(() => store.save('gmgn_too_short'), { code: 'INVALID_GMGN_API_KEY' });
     assert.equal(store.get(), key);
@@ -48,7 +53,7 @@ test('each new GMGN API setup gets a fresh pending Ed25519 key without exposing 
     assert.equal(JSON.stringify(first).includes('PRIVATE KEY'), false);
     const firstPrivate = store.verificationPrivateKey();
     assert.match(firstPrivate, /^-----BEGIN PRIVATE KEY-----/);
-    assert.equal(fs.statSync(store.pendingSigningFile).mode & 0o777, 0o600);
+    assertPrivateMode(store.pendingSigningFile, 0o600);
 
     assert.equal(store.onboarding().publicKey, first.publicKey);
     const second = store.onboarding({ regenerate: true });
@@ -56,7 +61,7 @@ test('each new GMGN API setup gets a fresh pending Ed25519 key without exposing 
     assert.notEqual(store.verificationPrivateKey(), firstPrivate);
     assert.equal(store.activatePending(), true);
     assert.equal(fs.existsSync(store.pendingSigningFile), false);
-    assert.equal(fs.statSync(store.signingFile).mode & 0o777, 0o600);
+    assertPrivateMode(store.signingFile, 0o600);
     assert.equal(store.verificationPrivateKey(), '');
 
     const third = store.onboarding();
