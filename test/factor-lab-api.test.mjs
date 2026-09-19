@@ -72,5 +72,6 @@ test('status/export include sanitized factor lab data and manual policy save cre
 
   const exported = await dispatch(server, 'GET', '/api/export');
   assert.ok(exported.body.factorLab);
+  assert.ok(Array.isArray(exported.body.factorLab.aggregates));
   assert.doesNotMatch(JSON.stringify(exported.body.factorLab), /api.?key|private.?key|secret|raw/i);
 });

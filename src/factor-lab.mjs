@@ -136,19 +136,30 @@ function seededRandom(seed) {
 }
 
 export function deterministicBootstrap(differences, seed, iterations = 10_000) {
-  const values = differences.filter(Number.isFinite);
-  if (!values.length) return { lower: null, upper: null, iterations: 0 };
+  const observations = differences.map(item => typeof item === 'object' && item !== null
+    ? { value: finite(item.value), stratum: String(item.stratum || 'all') }
+    : { value: finite(item), stratum: 'all' }).filter(item => Number.isFinite(item.value));
+  const groups = new Map();
+  for (const item of observations) {
+    if (!groups.has(item.stratum)) groups.set(item.stratum, []);
+    groups.get(item.stratum).push(item.value);
+  }
+  if (!observations.length) return { lower: null, upper: null, iterations: 0, strata: 0 };
   const random = seededRandom(seed);
   const results = [];
   for (let iteration = 0; iteration < iterations; iteration++) {
-    const sample = Array.from({ length: values.length }, () => values[Math.floor(random() * values.length)]);
+    const sample = [];
+    for (const values of groups.values()) {
+      for (let index = 0; index < values.length; index++) sample.push(values[Math.floor(random() * values.length)]);
+    }
     results.push(median(sample));
   }
   results.sort((a, b) => a - b);
   return {
     lower: results[Math.floor((results.length - 1) * 0.025)],
     upper: results[Math.floor((results.length - 1) * 0.975)],
-    iterations: results.length
+    iterations: results.length,
+    strata: groups.size
   };
 }
 
@@ -183,6 +194,7 @@ export function shadowReturn({ entryPrice, exitPrice, entryLiquidity, exitLiquid
 }
 
 function factorSnapshot(candidate) {
+  const category = value => typeof value === 'boolean' ? value : null;
   return Object.freeze({
     marketCap: finite(candidate.marketCap),
     liquidity: finite(candidate.liquidity),
@@ -190,9 +202,9 @@ function factorSnapshot(candidate) {
     discoveryScore: finite(candidate.discoveryScore),
     holders: finite(candidate.holders),
     volume1h: finite(candidate.volume1h),
-    priorityBand: candidate.priorityBand === true,
+    priorityBand: category(candidate.priorityBand),
     smartWallets: finite(candidate.deep?.marketBehavior?.smartWallets ?? candidate.deep?.marketBehavior?.smartDegenCount),
-    kolOnly: candidate.deep?.marketBehavior?.kolOnly === true
+    kolOnly: category(candidate.deep?.marketBehavior?.kolOnly)
   });
 }
 
@@ -413,7 +425,13 @@ function comparisonMetrics(trades, champion, challenger, since, experimentId, no
   const differences = [];
   for (const key of MAIN_HORIZONS) {
     const baseline = Number(base.horizons[key].median ?? 0);
-    for (const value of next.horizons[key].values) differences.push((value - baseline) * WEIGHTS[key]);
+    for (const trade of next.rows) {
+      const value = trade.samples?.[key]?.conservativeReturn;
+      if (Number.isFinite(value)) differences.push({
+        value: (value - baseline) * WEIGHTS[key],
+        stratum: `${trade.chain || 'unknown'}:${Math.floor(Number(trade.signalAt || 0) / DAY)}`
+      });
+    }
   }
   const confidence = deterministicBootstrap(differences, experimentId, 10_000);
   return {
@@ -457,11 +475,30 @@ function publicTrade(trade) {
     factors: {
       marketCap: finite(factors.marketCap), liquidity: finite(factors.liquidity), ageSec: finite(factors.ageSec),
       discoveryScore: finite(factors.discoveryScore), holders: finite(factors.holders), volume1h: finite(factors.volume1h),
-      priorityBand: factors.priorityBand === true, smartWallets: finite(factors.smartWallets), kolOnly: factors.kolOnly === true
+      priorityBand: typeof factors.priorityBand === 'boolean' ? factors.priorityBand : null,
+      smartWallets: finite(factors.smartWallets), kolOnly: typeof factors.kolOnly === 'boolean' ? factors.kolOnly : null
     },
     entry: trade.entry?.price ? { targetAt: finite(trade.entry.targetAt), at: finite(trade.entry.at), price: finite(trade.entry.price),
       liquidity: finite(trade.entry.liquidity), source: String(trade.entry.source || '').slice(0, 40) } : { targetAt: finite(trade.entry?.targetAt) },
     samples: Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => [key, publicSample(trade.samples?.[key])]))
+  };
+}
+
+function publicAggregate(aggregate) {
+  const allowedFactors = new Set(['marketCap', 'liquidity', 'ageSec', 'discoveryScore', 'holders', 'volume1h', 'smartWallets', 'priorityBand', 'kolOnly']);
+  return {
+    at: finite(aggregate?.at), type: aggregate?.type === 'PRUNED' ? 'PRUNED' : 'ARCHIVE', count: finite(aggregate?.count),
+    groups: (Array.isArray(aggregate?.groups) ? aggregate.groups : []).slice(0, 500).map(group => ({
+      strategyVersion: String(group?.strategyVersion || '').slice(0, 64), chain: String(group?.chain || '').slice(0, 32),
+      cohort: String(group?.cohort || '').slice(0, 24), horizon: Object.hasOwn(SHADOW_HORIZONS, group?.horizon) ? group.horizon : '',
+      count: finite(group?.count), observedCount: finite(group?.observedCount), conservativeCount: finite(group?.conservativeCount),
+      medianObserved: finite(group?.medianObserved), medianConservative: finite(group?.medianConservative),
+      p10: finite(group?.p10), positiveRate: finite(group?.positiveRate),
+      factorBuckets: Object.fromEntries(Object.entries(group?.factorBuckets || {}).filter(([factor]) => allowedFactors.has(factor)).map(([factor, buckets]) => [factor,
+        Object.fromEntries(Object.entries(buckets || {}).slice(0, 32).map(([bucket, stats]) => [String(bucket).slice(0, 40), {
+          count: finite(stats?.count), completed: finite(stats?.completed), medianConservative: finite(stats?.medianConservative)
+        }]))]))
+    }))
   };
 }
 
@@ -500,9 +537,59 @@ function factorQualityRows(trades, horizon = 'm10') {
     }
   }
   for (const factor of ['priorityBand', 'kolOnly']) {
-    for (const value of [true, false]) addRow(factor, String(value), completed.filter(row => row.factors?.[factor] === value));
+    for (const value of [true, false, null]) addRow(factor, value === null ? 'unknown' : String(value),
+      completed.filter(row => (typeof row.factors?.[factor] === 'boolean' ? row.factors[factor] : null) === value));
   }
   return rows.filter(row => row.sampleCount > 0);
+}
+
+function factorBucket(value) {
+  if (typeof value === 'boolean') return String(value);
+  const number = finite(value);
+  if (!Number.isFinite(number)) return 'unknown';
+  if (number === 0) return '0';
+  const power = Math.floor(Math.log10(Math.abs(number)));
+  return `${10 ** power}-${10 ** (power + 1)}`;
+}
+
+function archiveTrades(trades, now) {
+  const factorNames = ['marketCap', 'liquidity', 'ageSec', 'discoveryScore', 'holders', 'volume1h', 'smartWallets', 'priorityBand', 'kolOnly'];
+  const groups = new Map();
+  for (const trade of trades) {
+    for (const [horizon, sample] of Object.entries(trade.samples || {})) {
+      if (!Object.hasOwn(SHADOW_HORIZONS, horizon) || !sample) continue;
+      const key = [trade.strategyVersion || '', trade.chain || '', trade.cohort || '', horizon].join('|');
+      if (!groups.has(key)) groups.set(key, {
+        strategyVersion: String(trade.strategyVersion || ''), chain: String(trade.chain || ''),
+        cohort: String(trade.cohort || ''), horizon, count: 0, observed: [], conservative: [], factorBuckets: {}
+      });
+      const group = groups.get(key);
+      group.count++;
+      if (Number.isFinite(sample.observedReturn)) group.observed.push(sample.observedReturn);
+      if (Number.isFinite(sample.conservativeReturn)) group.conservative.push(sample.conservativeReturn);
+      for (const factor of factorNames) {
+        const bucket = factorBucket(trade.factors?.[factor]);
+        group.factorBuckets[factor] ||= {};
+        group.factorBuckets[factor][bucket] ||= { count: 0, conservative: [] };
+        const stats = group.factorBuckets[factor][bucket];
+        stats.count++;
+        if (Number.isFinite(sample.conservativeReturn)) stats.conservative.push(sample.conservativeReturn);
+      }
+    }
+  }
+  return {
+    at: now, type: 'PRUNED', count: trades.length,
+    groups: [...groups.values()].map(group => ({
+      strategyVersion: group.strategyVersion, chain: group.chain, cohort: group.cohort, horizon: group.horizon,
+      count: group.count, observedCount: group.observed.length, conservativeCount: group.conservative.length,
+      medianObserved: median(group.observed), medianConservative: median(group.conservative), p10: percentile(group.conservative, .10),
+      positiveRate: group.conservative.length ? group.conservative.filter(value => value > 0).length / group.conservative.length : null,
+      factorBuckets: Object.fromEntries(Object.entries(group.factorBuckets).map(([factor, buckets]) => [factor,
+        Object.fromEntries(Object.entries(buckets).map(([bucket, stats]) => [bucket, {
+          count: stats.count, completed: stats.conservative.length, medianConservative: median(stats.conservative)
+        }]))]))
+    }))
+  };
 }
 
 export class FactorLab {
@@ -548,7 +635,19 @@ export class FactorLab {
     const decision = evaluatePromotion(metrics);
     if (!this.state.autoPromotionEnabled) return { promoted: false, reasons: ['auto_promotion_paused', ...decision.reasons] };
     if (this.state.lastPromotionAt && now - this.state.lastPromotionAt < DAY) return { promoted: false, reasons: ['cooldown', ...decision.reasons] };
-    if (!decision.promote) return { promoted: false, reasons: decision.reasons };
+    if (!decision.promote) {
+      const readiness = new Set(['insufficient_signal_samples', 'insufficient_matched_pairs', 'insufficient_time_span', 'coverage_m5', 'coverage_m10', 'coverage_m15']);
+      if (!decision.reasons.some(reason => readiness.has(reason))) {
+        const rejected = this.state.challenger;
+        this.state.challenger = null;
+        this.state.history.push({ at: now, type: 'CHALLENGER_REJECTED', strategyVersion: rejected.version,
+          baselineVersion: rejected.baselineVersion, changedPaths: rejected.changedPaths,
+          reason: decision.reasons.join(',').slice(0, 160) });
+        this.save();
+        return { promoted: false, rejected: true, reasons: decision.reasons };
+      }
+      return { promoted: false, reasons: decision.reasons };
+    }
     const challenger = this.state.challenger;
     this.state.previousChampion = this.state.champion;
     this.state.champion = { version: challenger.version, strategy: clone(challenger.strategy), activatedAt: now };
@@ -642,12 +741,12 @@ export class FactorLab {
   }
 
   prune(now = this.now()) {
+    const expired = this.state.trades.filter(trade => now - Number(trade.signalAt || 0) > RETENTION_MS);
     const fresh = this.state.trades.filter(trade => now - Number(trade.signalAt || 0) <= RETENTION_MS)
       .sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0));
-    if (fresh.length > MAX_TRADES) {
-      const removed = fresh.slice(0, fresh.length - MAX_TRADES);
-      this.state.aggregates.push({ at: now, type: 'PRUNED', count: removed.length });
-    }
+    const overflow = fresh.length > MAX_TRADES ? fresh.slice(0, fresh.length - MAX_TRADES) : [];
+    const removed = [...expired, ...overflow];
+    if (removed.length) this.state.aggregates.push(archiveTrades(removed, now));
     this.state.trades = fresh.slice(-MAX_TRADES);
     this.state.aggregates = this.state.aggregates.slice(-1_000);
     this.state.history = this.state.history.slice(-1_000);
@@ -703,6 +802,9 @@ export class FactorLab {
 
   manualBaseline(policy, now = this.now()) {
     const strategy = defaultSoftStrategy(policy);
+    if (this.state.challenger) this.state.history.push({ at: now, type: 'CHALLENGER_REJECTED',
+      strategyVersion: this.state.challenger.version, baselineVersion: this.state.challenger.baselineVersion,
+      changedPaths: this.state.challenger.changedPaths, reason: 'manual_override' });
     this.state.previousChampion = this.state.champion;
     this.state.champion = { version: strategyFingerprint(strategy), strategy, activatedAt: now };
     this.state.challenger = null;
@@ -791,6 +893,7 @@ export class FactorLab {
       summary: this.summary(),
       factors: factorQualityRows(this.state.trades),
       trades: this.state.trades.map(publicTrade),
+      aggregates: this.state.aggregates.map(publicAggregate),
       history: this.query({ view: 'history', limit: 100 }).rows
     };
   }

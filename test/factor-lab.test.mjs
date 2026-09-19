@@ -139,6 +139,10 @@ test('soft strategy contains no safety gates and return calculation is bounded',
   assert.equal(shadowReturn({ entryPrice: 1, exitPrice: 0, entryLiquidity: 10_000 }), -1);
   assert.equal(strategy.discovery.minMarketCap, 10_000);
   assert.equal(strategy.weights.priorityBand, 35);
+  const unknown = createShadowTrade(candidate({ priorityBand: undefined, deep: { marketBehavior: {} } }),
+    { cohort: 'signal', signalAt: 1, policy, strategy });
+  assert.equal(unknown.factors.priorityBand, null);
+  assert.equal(unknown.factors.kolOnly, null);
 });
 
 test('factor lab persists separately, recovers backup and retains at most 5000 recent trades', () => {
@@ -158,6 +162,19 @@ test('factor lab persists separately, recovers backup and retains at most 5000 r
     recovered.prune(5002);
     assert.equal(recovered.state.trades.length, 5000);
     assert.equal(recovered.state.trades[0].id, '1');
+
+    recovered.state.trades.push({
+      id: 'expired', signalAt: 1, chain: 'sol', cohort: 'signal', strategyVersion: 'v1',
+      factors: { liquidity: 10_000, priorityBand: true },
+      samples: { m10: { observedReturn: .1, conservativeReturn: .05 } }
+    });
+    recovered.prune(91 * 24 * 60 * 60_000);
+    const archive = recovered.state.aggregates.at(-1);
+    assert.equal(archive.type, 'PRUNED');
+    assert.equal(archive.groups[0].chain, 'sol');
+    assert.equal(archive.groups[0].horizon, 'm10');
+    assert.equal(archive.groups[0].medianConservative, .05);
+    assert.ok(archive.groups[0].factorBuckets.liquidity);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -184,6 +201,15 @@ test('deterministic bootstrap is repeatable and automatic promotion can roll bac
   const two = deterministicBootstrap([.02, .03, .01, .04], 'experiment-a', 1_000);
   assert.deepEqual(one, two);
   assert.ok(one.lower > 0);
+  const stratified = deterministicBootstrap([
+    { value: .01, stratum: 'sol:1' }, { value: .03, stratum: 'sol:1' },
+    { value: .02, stratum: 'base:1' }, { value: .04, stratum: 'base:1' }
+  ], 'stratified', 1_000);
+  assert.equal(stratified.strata, 2);
+  assert.deepEqual(stratified, deterministicBootstrap([
+    { value: .01, stratum: 'sol:1' }, { value: .03, stratum: 'sol:1' },
+    { value: .02, stratum: 'base:1' }, { value: .04, stratum: 'base:1' }
+  ], 'stratified', 1_000));
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-promotion-'));
   try {
@@ -202,5 +228,26 @@ test('deterministic bootstrap is repeatable and automatic promotion can roll bac
     const rolled = lab.evaluateRollback({ completed: 40, weightedMedianUplift: -.021, coverage: .9 }, 4);
     assert.equal(rolled.rolledBack, true);
     assert.equal(lab.state.champion.version, original);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('mature failed challengers release the slot and manual baselines preserve audit reasons', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-audit-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    lab.startChallenger(candidateMutations(lab.effectiveStrategy())[0].strategy, 2);
+    const rejected = lab.evaluateChallenger({
+      completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+      coverage: { m5: .9, m10: .9, m15: .9 }, weightedMedianUplift: 0,
+      weightedHitRateUplift: 0, bootstrapLower: -.01, worstP10Regression: 0
+    }, 3);
+    assert.equal(rejected.rejected, true);
+    assert.equal(lab.state.challenger, null);
+    assert.equal(lab.state.history.at(-1).type, 'CHALLENGER_REJECTED');
+
+    lab.startChallenger(candidateMutations(lab.effectiveStrategy())[1].strategy, 4);
+    lab.manualBaseline(policy, 5);
+    assert.equal(lab.state.history.at(-2).reason, 'manual_override');
+    assert.equal(lab.state.history.at(-1).type, 'MANUAL_BASELINE');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
