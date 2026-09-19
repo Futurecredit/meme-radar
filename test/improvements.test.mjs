@@ -174,7 +174,9 @@ test('an in-flight scan keeps one policy snapshot while a saved change applies n
   },audit:async()=>{audited++;return {info:{price:{price:'1'}},security:{owner_renounced:'no'},pool:{},holders:[],traders:[],candles:[],_meta:{complete:true}};}};
   const scanner=new Scanner({gmgn,state,controls,settings:config});
   await scanner.cycle();
-  assert.equal(observedMax,100000);
+  // Discovery now queries a fixed 2x experimental envelope derived from the
+  // immutable cycle snapshot. A mid-cycle change to 40k would have yielded 80k.
+  assert.equal(observedMax,200000);
   assert.equal(audited,1);
   assert.equal(controls.policy().discovery.maxMarketCap,40000);
 });

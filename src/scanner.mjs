@@ -6,6 +6,7 @@ import { tokenInfoPrice } from './gmgn.mjs';
 import { collectOutcomeSamples, dueOutcomeJobs, outcomeCoverage, sampleRejected } from './outcomes.mjs';
 import { tokenKey } from './local-store.mjs';
 import { runtimePolicy } from './policy.mjs';
+import { applySoftStrategy } from './factor-lab.mjs';
 
 const numberOrNull = value => {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
@@ -188,6 +189,32 @@ export function selectAuditQueue(queue, availableAddresses, now, cycleNumber, li
   return selected.filter(Boolean);
 }
 
+export function selectExplorationBudget(queue, availableAddresses, now, cycleNumber, limit) {
+  const main = queue.filter(item => item.exploration !== true);
+  const exploration = queue.filter(item => item.exploration === true);
+  const mainLimit = Math.ceil(limit * 0.80);
+  const explorationLimit = Math.max(0, limit - mainLimit);
+  const selectedMain = selectAuditQueue(main, availableAddresses, now, cycleNumber, mainLimit);
+  const selectedExploration = selectAuditQueue(exploration, availableAddresses, now, cycleNumber + selectedMain.length, explorationLimit);
+  const selected = [...selectedMain, ...selectedExploration];
+  if (selected.length < limit) {
+    const used = new Set(selected.map(item => addressKey(item.address)));
+    const remaining = queue.filter(item => !used.has(addressKey(item.address)));
+    selected.push(...selectAuditQueue(remaining, availableAddresses, now, cycleNumber + selected.length, limit - selected.length));
+  }
+  return selected.slice(0, limit);
+}
+
+export function collectionEnvelope(settings) {
+  return Object.freeze({
+    ...settings,
+    discoveryMinMarketCap: Math.max(0, Math.floor(num(settings.discoveryMinMarketCap) * 0.5)),
+    discoveryMaxMarketCap: Math.min(1_000_000_000, Math.ceil(num(settings.discoveryMaxMarketCap) * 2)),
+    minLiquidity: Math.max(0, Math.floor(num(settings.minLiquidity) * 0.5)),
+    minAgeSec: Math.max(60, Math.floor(num(settings.minAgeSec) * 0.5))
+  });
+}
+
 function nextAuditDelay(status, settings) {
   if (status === 'HARD_REJECT') return settings.hardRejectRecheckMs;
   if (status === 'X_REVIEW') return settings.chainPassRecheckMs;
@@ -196,7 +223,7 @@ function nextAuditDelay(status, settings) {
 
 function buildQueue(previous, prequalified, now, settings) {
   const byAddress = new Map((previous || []).map(item => [addressKey(item.address), { ...item }]));
-  for (const { row, screen } of prequalified) {
+  for (const { row, screen, exploration = false } of prequalified) {
     const address = addressKey(row.address);
     const old = byAddress.get(address);
     byAddress.set(address, {
@@ -208,7 +235,8 @@ function buildQueue(previous, prequalified, now, settings) {
       attempts: num(old?.attempts),
       status: old?.status || 'QUEUED',
       priorityBand: Boolean(screen.priorityBand),
-      score: screen.score
+      score: screen.score,
+      exploration: exploration === true
       ,watched: Boolean(row._monitorOnly)
     });
   }
@@ -339,11 +367,12 @@ function addEvent(events, type, message, chain, data = {}) {
 }
 
 export class Scanner {
-  constructor({ gmgn, secondary = null, state, controls = null, settings = config }) {
+  constructor({ gmgn, secondary = null, state, controls = null, factorLab = null, settings = config }) {
     this.gmgn = gmgn;
     this.secondary = secondary;
     this.state = state;
     this.controls = controls;
+    this.factorLab = factorLab;
     this.config = settings;
     this.supportedChains = [...settings.supportedChains];
     this.activeChain = this.supportedChains.includes(state.value.activeChain) ? state.value.activeChain : settings.chain;
@@ -432,7 +461,9 @@ export class Scanner {
     this.running = true;
     const chain = this.activeChain;
     const chainCount = this.controls?.value.enabledChains.length || 1;
-    const policySettings = this.controls ? runtimePolicy(this.controls.policy()) : {};
+    const basePolicySettings = this.controls ? runtimePolicy(this.controls.policy()) : {};
+    const policySettings = this.factorLab?.effectiveStrategy
+      ? applySoftStrategy(basePolicySettings, this.factorLab.effectiveStrategy()) : basePolicySettings;
     const settings = Object.freeze({ ...this.config, ...policySettings, chain,
       maxDeepAuditsPerCycle: Math.max(1, Math.ceil((policySettings.maxDeepAuditsPerCycle ?? this.config.maxDeepAuditsPerCycle) / chainCount)),
       auditCycleBudgetMs: Math.max(20_000, (this.config.auditCycleBudgetMs || 80_000) / chainCount),
@@ -465,7 +496,8 @@ export class Scanner {
         return;
       }
 
-      let discovered = await this.gmgn.discover(chain, settings);
+      const envelopeSettings = collectionEnvelope(settings);
+      let discovered = await this.gmgn.discover(chain, envelopeSettings);
       if (this.gmgn.keyEpoch !== keyEpoch) return;
       const reviewRequests = [...this.requestedReviews.values()].filter(item => item.chain === chain
         && item.epoch === keyEpoch && Date.now() - item.at <= 10 * 60000);
@@ -476,6 +508,10 @@ export class Scanner {
       const prequalified = screened.filter(item => item.screen.pass).sort((a, b) =>
         Number(b.screen.priorityBand) - Number(a.screen.priorityBand) || b.screen.score - a.screen.score
       );
+      const explorationQualified = screened.filter(item => !item.screen.pass)
+        .map(item => ({ row: item.row, screen: discoveryScreen(item.row, envelopeSettings), exploration: true }))
+        .filter(item => item.screen.pass)
+        .sort((a, b) => b.screen.score - a.screen.score);
       const monitoring = new Map((prior.candidates || []).filter(row => row.status === 'X_REVIEW'
         || this.controls?.value.annotations[tokenKey(chain, row.address)]?.favorite).map(row => [addressKey(row.address), row]));
       for (const annotation of Object.values(this.controls?.value.annotations || {})) {
@@ -485,11 +521,11 @@ export class Scanner {
         .map(row => ({ row: { address: row.address, symbol: row.symbol || row.address.slice(0, 6), name: row.name || '',
           price: row.price, market_cap: row.marketCap, liquidity: row.liquidity, creation_timestamp: row.createdAt, _monitorOnly: true },
           screen: { mc: num(row.marketCap), liquidity: num(row.liquidity), ageSec: num(row.ageSec), priorityBand: true, score: 0 } }));
-      const auditable = [...prequalified, ...monitors];
+      const auditable = [...prequalified, ...explorationQualified, ...monitors];
       let auditQueue = buildQueue(prior.auditQueue, auditable, startedAt, settings);
       const availableAddresses = new Set(auditable.map(item => addressKey(item.row.address)));
       const queueByAddress = new Map(auditQueue.map(item => [addressKey(item.address), item]));
-      const selected = selectAuditQueue(auditQueue, availableAddresses, startedAt, num(prior.scanCount) + 1, settings.maxDeepAuditsPerCycle);
+      const selected = selectExplorationBudget(auditQueue, availableAddresses, startedAt, num(prior.scanCount) + 1, settings.maxDeepAuditsPerCycle);
       const requested = reviewRequests.map(item => queueByAddress.get(addressKey(item.row.address))).find(item => item
         && availableAddresses.has(addressKey(item.address)) && !(item.status === 'HARD_REJECT' && item.nextAuditAt > startedAt));
       if (requested) {
@@ -621,6 +657,7 @@ export class Scanner {
           events = addEvent(events, candidate.status, `${token.symbol}：${label}`, chain, { address: token.address });
           outcomes = upsertOutcome(outcomes, candidate, auditedAt);
           outcomes = sampleRejected(outcomes, candidate, auditedAt);
+          this.factorLab?.recordCandidate?.(candidate, { now: auditedAt, exploration: queued.exploration === true });
         } catch (error) {
           auditHadError = true;
           const auditedAt = Date.now();
@@ -654,6 +691,13 @@ export class Scanner {
       for (const job of sampleJobs) {
         await collectOutcomeSamples([job.row], this.gmgn, job.chain, { limit: 1, deadline: startedAt + (settings.auditCycleBudgetMs || 80_000) + 25_000 });
       }
+      if (this.factorLab?.collect) {
+        await this.factorLab.collect(this.gmgn, {
+          limit: settings.factorLabReadsPerCycle || 4,
+          deadline: startedAt + (settings.auditCycleBudgetMs || 80_000) + 25_000
+        });
+      }
+      this.factorLab?.automationTick?.(Date.now());
       for (const [id, rows] of Object.entries(outcomeScopes)) {
         if (id !== chain && prior.chainStates?.[id]) prior.chainStates[id].outcomeSummary = summarizeOutcomes(rows);
       }
@@ -700,6 +744,7 @@ export class Scanner {
         auditQueueStats: queueStats(auditQueue, availableAddresses, now, settings),
         outcomes,
         outcomeSummary: summarizeOutcomes(outcomes),
+        factorLabSummary: this.factorLab?.summary?.(now) || prior.factorLabSummary || null,
         sourceHealth: { discovery: discoveryHealth, lastAudit: lastAuditHealth, lastSecondary: lastSecondaryHealth },
         xCapability: { available: false, mode: 'manual', reason: 'X由用户点击链接人工复核' },
         policy: {

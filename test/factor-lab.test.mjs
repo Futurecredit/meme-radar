@@ -6,7 +6,9 @@ import path from 'node:path';
 import {
   FactorLab,
   applyPriceSample,
+  candidateMutations,
   createShadowTrade,
+  deterministicBootstrap,
   defaultSoftStrategy,
   dueShadowJobs,
   evaluatePromotion,
@@ -121,5 +123,49 @@ test('factor lab persists separately, recovers backup and retains at most 5000 r
     recovered.prune(5002);
     assert.equal(recovered.state.trades.length, 5000);
     assert.equal(recovered.state.trades[0].id, '1');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('candidate generation changes exactly one soft value by 10 percent and rejects safety fields', () => {
+  const strategy = defaultSoftStrategy(policy);
+  const mutations = candidateMutations(strategy);
+  assert.ok(mutations.length > 10);
+  for (const mutation of mutations) {
+    assert.equal(mutation.changedPaths.length, 1);
+    assert.doesNotMatch(mutation.changedPaths[0], /(?:^|\.)(?:tax|honeypot|owner|lpLocked|insider|bot|linked)(?:$|\.)/i);
+  }
+  const priorityUp = mutations.find(row => row.changedPaths[0] === 'weights.priorityBand' && row.direction === 1);
+  assert.equal(priorityUp.strategy.weights.priorityBand, 38.5);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-safety-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    assert.throws(() => lab.startChallenger({ ...strategy, maxBuyTax: .99 }, 2), /invalid_soft_strategy/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('deterministic bootstrap is repeatable and automatic promotion can roll back', () => {
+  const one = deterministicBootstrap([.02, .03, .01, .04], 'experiment-a', 1_000);
+  const two = deterministicBootstrap([.02, .03, .01, .04], 'experiment-a', 1_000);
+  assert.deepEqual(one, two);
+  assert.ok(one.lower > 0);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-promotion-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    const original = lab.state.champion.version;
+    const challenger = candidateMutations(lab.effectiveStrategy())[0].strategy;
+    lab.startChallenger(challenger, 2);
+    const promoted = lab.evaluateChallenger({
+      completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+      coverage: { m5: .9, m10: .9, m15: .9 }, weightedMedianUplift: .02,
+      weightedHitRateUplift: .04, bootstrapLower: .01, worstP10Regression: 0
+    }, 3);
+    assert.equal(promoted.promoted, true);
+    assert.notEqual(lab.state.champion.version, original);
+    assert.equal(lab.state.previousChampion.version, original);
+    const rolled = lab.evaluateRollback({ completed: 40, weightedMedianUplift: -.021, coverage: .9 }, 4);
+    assert.equal(rolled.rolledBack, true);
+    assert.equal(lab.state.champion.version, original);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

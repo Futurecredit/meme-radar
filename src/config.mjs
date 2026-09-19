@@ -17,6 +17,7 @@ export const config = Object.freeze({
   port: boundedInteger(process.env.RADAR_PORT, 3791, 1024, 65_535),
   auditCycleBudgetMs: 80_000,
   outcomeReadsPerCycle: 4,
+  factorLabReadsPerCycle: 4,
   xReviewMode: 'manual',
   maxRugRatio: 0.20,
   maxTop10Rate: 0.30,

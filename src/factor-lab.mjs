@@ -69,6 +69,89 @@ export function strategyFingerprint(strategy) {
   return hash(JSON.stringify(strategy)).slice(0, 24);
 }
 
+const DISCOVERY_KEYS = Object.freeze([
+  'minMarketCap', 'maxMarketCap', 'priorityMinMarketCap', 'priorityMaxMarketCap',
+  'minLiquidity', 'strictLiquidity', 'minAgeMinutes', 'maxAgeMinutes'
+]);
+const WEIGHT_KEYS = Object.freeze([
+  'priorityBand', 'ordinaryBand', 'liquidityCap', 'liquidityDivisor',
+  'volumeCap', 'volumeDivisor', 'holdersCap', 'holdersDivisor',
+  'smartTwo', 'smartThree', 'kolPenalty'
+]);
+const MUTABLE_WEIGHT_KEYS = Object.freeze([
+  'priorityBand', 'ordinaryBand', 'liquidityCap', 'volumeCap',
+  'holdersCap', 'smartTwo', 'smartThree', 'kolPenalty'
+]);
+
+function requireExactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+}
+
+export function validateSoftStrategy(strategy) {
+  if (!requireExactKeys(strategy, ['version', 'discovery', 'weights']) || strategy.version !== 1
+    || !requireExactKeys(strategy.discovery, DISCOVERY_KEYS) || !requireExactKeys(strategy.weights, WEIGHT_KEYS)) return false;
+  if ([...DISCOVERY_KEYS.map(key => strategy.discovery[key]), ...WEIGHT_KEYS.map(key => strategy.weights[key])]
+    .some(value => !Number.isFinite(value) || value < 0)) return false;
+  const d = strategy.discovery;
+  return d.minMarketCap < d.maxMarketCap
+    && d.priorityMinMarketCap >= d.minMarketCap
+    && d.priorityMaxMarketCap <= d.maxMarketCap
+    && d.priorityMinMarketCap < d.priorityMaxMarketCap
+    && d.strictLiquidity >= d.minLiquidity
+    && d.minAgeMinutes >= 1 && d.minAgeMinutes < d.maxAgeMinutes && d.maxAgeMinutes <= 43_200;
+}
+
+function setPath(source, section, key, value) {
+  const next = clone(source);
+  next[section][key] = value;
+  return next;
+}
+
+export function candidateMutations(strategy) {
+  if (!validateSoftStrategy(strategy)) return [];
+  const rows = [];
+  for (const [section, keys] of [['weights', MUTABLE_WEIGHT_KEYS], ['discovery', DISCOVERY_KEYS]]) {
+    for (const key of keys) {
+      for (const direction of [-1, 1]) {
+        const current = strategy[section][key];
+        const raw = current * (1 + direction * 0.10);
+        const value = section === 'discovery' ? Math.max(key.includes('Age') ? 1 : 0, Math.round(raw)) : Math.round(raw * 1e6) / 1e6;
+        const candidate = setPath(strategy, section, key, value);
+        if (value !== current && validateSoftStrategy(candidate)) rows.push({
+          strategy: candidate, direction, changedPaths: [`${section}.${key}`]
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+function seededRandom(seed) {
+  let value = parseInt(hash(seed).slice(0, 8), 16) || 1;
+  return () => {
+    value ^= value << 13; value ^= value >>> 17; value ^= value << 5;
+    return (value >>> 0) / 0x1_0000_0000;
+  };
+}
+
+export function deterministicBootstrap(differences, seed, iterations = 10_000) {
+  const values = differences.filter(Number.isFinite);
+  if (!values.length) return { lower: null, upper: null, iterations: 0 };
+  const random = seededRandom(seed);
+  const results = [];
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const sample = Array.from({ length: values.length }, () => values[Math.floor(random() * values.length)]);
+    results.push(median(sample));
+  }
+  results.sort((a, b) => a - b);
+  return {
+    lower: results[Math.floor((results.length - 1) * 0.025)],
+    upper: results[Math.floor((results.length - 1) * 0.975)],
+    iterations: results.length
+  };
+}
+
 export function applySoftStrategy(runtimeSettings, strategy) {
   const discovery = strategy?.discovery || {};
   return Object.freeze({
@@ -290,6 +373,65 @@ function shouldSampleHardReject(candidate) {
   return parseInt(hash(`${candidate.chain}:${candidate.address}`).slice(0, 2), 16) % 5 === 0;
 }
 
+function strategyAccepts(trade, strategy) {
+  const d = strategy.discovery;
+  const f = trade.factors || {};
+  return finite(f.marketCap) >= d.minMarketCap && finite(f.marketCap) <= d.maxMarketCap
+    && finite(f.liquidity) >= d.minLiquidity
+    && finite(f.ageSec) >= d.minAgeMinutes * 60 && finite(f.ageSec) <= d.maxAgeMinutes * 60;
+}
+
+function strategyPerformance(trades, strategy, since = 0, now = Date.now()) {
+  const rows = trades.filter(trade => trade.cohort !== 'hard_reject' && trade.signalAt >= since && strategyAccepts(trade, strategy));
+  const horizons = Object.fromEntries(MAIN_HORIZONS.map(key => {
+    const eligible = rows.filter(row => row.entry?.at && now >= row.entry.at + SHADOW_HORIZONS[key]);
+    const values = eligible.map(row => row.samples?.[key]?.conservativeReturn).filter(Number.isFinite);
+    return [key, {
+      eligible: eligible.length,
+      completed: values.length,
+      coverage: eligible.length ? values.length / eligible.length : 0,
+      median: median(values),
+      hitRate: values.length ? values.filter(value => value > 0).length / values.length : null,
+      p10: percentile(values, 0.10),
+      values
+    }];
+  }));
+  const weighted = metric => MAIN_HORIZONS.reduce((sum, key) => sum + WEIGHTS[key] * Number(horizons[key][metric] ?? 0), 0);
+  return {
+    rows,
+    horizons,
+    completed15m: horizons.m15.completed,
+    weightedMedian: weighted('median'),
+    weightedHitRate: weighted('hitRate'),
+    weightedP10: weighted('p10')
+  };
+}
+
+function comparisonMetrics(trades, champion, challenger, since, experimentId, now) {
+  const base = strategyPerformance(trades, champion, since, now);
+  const next = strategyPerformance(trades, challenger, since, now);
+  const differences = [];
+  for (const key of MAIN_HORIZONS) {
+    const baseline = Number(base.horizons[key].median ?? 0);
+    for (const value of next.horizons[key].values) differences.push((value - baseline) * WEIGHTS[key]);
+  }
+  const confidence = deterministicBootstrap(differences, experimentId, 10_000);
+  return {
+    completed15m: next.completed15m,
+    matchedPairs: trades.filter(row => row.cohort === 'signal' && row.matchedTradeId && row.signalAt >= since).length,
+    spanMs: next.rows.length ? Math.max(...next.rows.map(row => row.signalAt)) - Math.min(...next.rows.map(row => row.signalAt)) : 0,
+    coverage: Object.fromEntries(MAIN_HORIZONS.map(key => [key, next.horizons[key].coverage])),
+    weightedMedianUplift: next.weightedMedian - base.weightedMedian,
+    weightedHitRateUplift: next.weightedHitRate - base.weightedHitRate,
+    bootstrapLower: confidence.lower,
+    worstP10Regression: Math.max(...MAIN_HORIZONS.map(key =>
+      Number(base.horizons[key].p10 ?? 0) - Number(next.horizons[key].p10 ?? 0)
+    )),
+    base,
+    next
+  };
+}
+
 export class FactorLab {
   constructor(dir, { policy, now = Date.now } = {}) {
     this.file = path.join(dir, 'factor-lab.json');
@@ -308,6 +450,90 @@ export class FactorLab {
 
   effectiveStrategy() {
     return clone(this.state.champion.strategy);
+  }
+
+  startChallenger(strategy, now = this.now(), changedPaths = null) {
+    if (!validateSoftStrategy(strategy)) throw Object.assign(new Error('invalid_soft_strategy'), { statusCode: 400 });
+    const mutations = candidateMutations(this.state.champion.strategy);
+    const matched = mutations.find(row => strategyFingerprint(row.strategy) === strategyFingerprint(strategy));
+    if (!matched) throw Object.assign(new Error('invalid_soft_strategy'), { statusCode: 400 });
+    this.state.challenger = {
+      version: strategyFingerprint(strategy), strategy: clone(strategy),
+      baselineVersion: this.state.champion.version,
+      createdAt: now,
+      changedPaths: changedPaths || matched.changedPaths,
+      direction: matched.direction
+    };
+    this.state.history.push({ at: now, type: 'CHALLENGER_CREATED', strategyVersion: this.state.challenger.version,
+      baselineVersion: this.state.champion.version, changedPaths: this.state.challenger.changedPaths });
+    this.save();
+    return clone(this.state.challenger);
+  }
+
+  evaluateChallenger(metrics, now = this.now()) {
+    if (!this.state.challenger) return { promoted: false, reasons: ['no_challenger'] };
+    const decision = evaluatePromotion(metrics);
+    if (!this.state.autoPromotionEnabled) return { promoted: false, reasons: ['auto_promotion_paused', ...decision.reasons] };
+    if (this.state.lastPromotionAt && now - this.state.lastPromotionAt < DAY) return { promoted: false, reasons: ['cooldown', ...decision.reasons] };
+    if (!decision.promote) return { promoted: false, reasons: decision.reasons };
+    const challenger = this.state.challenger;
+    this.state.previousChampion = this.state.champion;
+    this.state.champion = { version: challenger.version, strategy: clone(challenger.strategy), activatedAt: now };
+    this.state.challenger = null;
+    this.state.lastPromotionAt = now;
+    this.state.history.push({ at: now, type: 'STRATEGY_PROMOTED', strategyVersion: this.state.champion.version,
+      previousVersion: this.state.previousChampion.version, metrics: {
+        completed15m: metrics.completed15m, matchedPairs: metrics.matchedPairs,
+        weightedMedianUplift: metrics.weightedMedianUplift, weightedHitRateUplift: metrics.weightedHitRateUplift,
+        bootstrapLower: metrics.bootstrapLower, worstP10Regression: metrics.worstP10Regression
+      } });
+    this.save();
+    return { promoted: true, strategyVersion: this.state.champion.version };
+  }
+
+  evaluateRollback(metrics, now = this.now()) {
+    if (!this.state.previousChampion || Number(metrics.completed) < 40) return { rolledBack: false };
+    if (!(Number(metrics.weightedMedianUplift) <= -0.02 || Number(metrics.coverage) < 0.70)) return { rolledBack: false };
+    const result = this.rollback(now);
+    return { rolledBack: true, summary: result };
+  }
+
+  automationTick(now = this.now()) {
+    if (!this.state.autoPromotionEnabled || this.state.disabledReason) return { action: 'paused' };
+    try {
+      if (this.state.previousChampion && this.state.champion.activatedAt) {
+        const rollback = comparisonMetrics(this.state.trades, this.state.previousChampion.strategy,
+          this.state.champion.strategy, this.state.champion.activatedAt, `rollback:${this.state.champion.version}`, now);
+        const coverage = Math.min(...MAIN_HORIZONS.map(key => rollback.coverage[key]));
+        const result = this.evaluateRollback({ completed: rollback.completed15m,
+          weightedMedianUplift: rollback.weightedMedianUplift, coverage }, now);
+        if (result.rolledBack) return { action: 'rolled_back' };
+      }
+      if (this.state.challenger) {
+        const metrics = comparisonMetrics(this.state.trades, this.state.champion.strategy,
+          this.state.challenger.strategy, this.state.challenger.createdAt, this.state.challenger.version, now);
+        const result = this.evaluateChallenger(metrics, now);
+        return { action: result.promoted ? 'promoted' : 'observing', metrics, reasons: result.reasons || [] };
+      }
+      const baseline = strategyPerformance(this.state.trades, this.state.champion.strategy, 0, now);
+      const spanMs = baseline.rows.length ? Math.max(...baseline.rows.map(row => row.signalAt)) - Math.min(...baseline.rows.map(row => row.signalAt)) : 0;
+      if (baseline.completed15m < 80 || spanMs < DAY) return { action: 'collecting' };
+      const ranked = candidateMutations(this.state.champion.strategy).map(mutation => {
+        const performance = strategyPerformance(this.state.trades, mutation.strategy, 0, now);
+        const horizonUplifts = MAIN_HORIZONS.map(key => Number(performance.horizons[key].median ?? -Infinity)
+          - Number(baseline.horizons[key].median ?? 0));
+        return { ...mutation, uplift: performance.weightedMedian - baseline.weightedMedian, horizonUplifts };
+      }).filter(row => row.uplift > 0.005 && row.horizonUplifts.every(value => value > 0))
+        .sort((a, b) => b.uplift - a.uplift);
+      if (!ranked.length) return { action: 'no_candidate' };
+      this.startChallenger(ranked[0].strategy, now, ranked[0].changedPaths);
+      return { action: 'challenger_created', changedPaths: ranked[0].changedPaths };
+    } catch (error) {
+      this.state.disabledReason = 'AUTOMATION_ERROR';
+      this.state.history.push({ at: now, type: 'AUTOMATION_DISABLED', reason: 'AUTOMATION_ERROR' });
+      this.save();
+      return { action: 'disabled', error: String(error?.code || 'AUTOMATION_ERROR') };
+    }
   }
 
   recordCandidate(candidate, { now = this.now(), exploration = false } = {}) {
