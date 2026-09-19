@@ -45,6 +45,10 @@ test('factor lab API paginates allowlisted views and protects control writes', a
   assert.equal(trades.body.rows[0].samples.m5.netReturn, .1);
   assert.doesNotMatch(JSON.stringify(trades.body), /do-not-leak|privateKey|raw/);
   assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=unknown')).status, 400);
+  assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&wat=1')).status, 400);
+  assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&limit=10junk')).status, 400);
+  assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&horizon=bad')).status, 400);
+  assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&cohort=bad')).status, 400);
 
   assert.equal((await dispatch(server, 'POST', '/api/factor-lab-control', { autoPromotionEnabled: false })).status, 200);
   assert.equal(lab.state.autoPromotionEnabled, false);

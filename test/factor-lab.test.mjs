@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   FactorLab,
+  applySoftStrategy,
   applyPriceSample,
   candidateMutations,
   createShadowTrade,
@@ -13,6 +14,8 @@ import {
   dueShadowJobs,
   evaluatePromotion,
   matchControl,
+  strategyPerformance,
+  comparisonMetrics,
   shadowReturn
 } from '../src/factor-lab.mjs';
 
@@ -143,6 +146,10 @@ test('soft strategy contains no safety gates and return calculation is bounded',
     { cohort: 'signal', signalAt: 1, policy, strategy });
   assert.equal(unknown.factors.priorityBand, null);
   assert.equal(unknown.factors.kolOnly, null);
+  const frozenDiscovery = createShadowTrade(candidate({ discoverySmartWallets: 2, discoveryKolOnly: true,
+    deep: { marketBehavior: { smartWallets: 9, kolOnly: false } } }), { cohort: 'signal', signalAt: 2, policy, strategy });
+  assert.equal(frozenDiscovery.factors.smartWallets, 2);
+  assert.equal(frozenDiscovery.factors.kolOnly, true);
 });
 
 test('factor lab persists separately, recovers backup and retains at most 5000 recent trades', () => {
@@ -180,11 +187,14 @@ test('factor lab persists separately, recovers backup and retains at most 5000 r
 
 test('candidate generation changes exactly one soft value by 10 percent and rejects safety fields', () => {
   const strategy = defaultSoftStrategy(policy);
+  assert.equal(Object.hasOwn(strategy.discovery, 'strictLiquidity'), false);
   const mutations = candidateMutations(strategy);
   assert.ok(mutations.length > 10);
   for (const mutation of mutations) {
     assert.equal(mutation.changedPaths.length, 1);
     assert.doesNotMatch(mutation.changedPaths[0], /(?:^|\.)(?:tax|honeypot|owner|lpLocked|insider|bot|linked)(?:$|\.)/i);
+    assert.notEqual(mutation.changedPaths[0], 'discovery.strictLiquidity');
+    assert.equal(applySoftStrategy({ strictLiquidity: 8_000 }, mutation.strategy).strictLiquidity, 8_000);
   }
   const priorityUp = mutations.find(row => row.changedPaths[0] === 'weights.priorityBand' && row.direction === 1);
   assert.equal(priorityUp.strategy.weights.priorityBand, 38.5);
@@ -193,6 +203,111 @@ test('candidate generation changes exactly one soft value by 10 percent and reje
   try {
     const lab = new FactorLab(dir, { policy, now: () => 1 });
     assert.throws(() => lab.startChallenger({ ...strategy, maxBuyTax: .99 }, 2), /invalid_soft_strategy/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('strategy replay uses signals only, counts missing entries in coverage and makes weights observable', () => {
+  const base = defaultSoftStrategy(policy);
+  const weightMutation = candidateMutations(base).find(row => row.changedPaths[0] === 'weights.priorityBand' && row.direction === -1).strategy;
+  const at = 2 * 24 * 60 * 60_000;
+  const rows = Array.from({ length: 5 }, (_, index) => {
+    const boundary = index >= 3;
+    return createShadowTrade(candidate({
+      address: String(index + 1).repeat(32), marketCap: index === 4 ? 100_000 : 40_000,
+      liquidity: index === 4 ? 25_000 : boundary ? 3_000 : 30_000,
+      volume1h: boundary ? 0 : 50_000, holders: boundary ? 0 : 500,
+      deep: { marketBehavior: { smartWallets: boundary ? 0 : 3, kolOnly: false } }
+    }), { cohort: 'signal', signalAt: at + index, policy, strategy: base });
+  });
+  rows.push(createShadowTrade(candidate({ address: 'c'.repeat(32), status: 'WAIT_RECHECK' }),
+    { cohort: 'control', signalAt: at, policy, strategy: base }));
+  for (const [index, row] of rows.entries()) {
+    if (index === 0) continue;
+    row.entry = { targetAt: row.signalAt + 60_000, at: row.signalAt + 60_000, price: 1 };
+    for (const key of ['m5', 'm10', 'm15']) row.samples[key] = { conservativeReturn: index / 100 };
+  }
+  const now = at + 60 * 60_000;
+  const baseResult = strategyPerformance(rows, base, 0, now);
+  const changedResult = strategyPerformance(rows, weightMutation, 0, now);
+  assert.ok(baseResult.rows.every(row => row.cohort === 'signal'));
+  assert.equal(baseResult.horizons.m15.eligible, 4);
+  assert.equal(baseResult.horizons.m15.completed, 3);
+  assert.notDeepEqual(baseResult.rows.map(row => row.id), changedResult.rows.map(row => row.id));
+});
+
+test('promotion metrics require completed signal-control pairs and bootstrap whole pairs', () => {
+  const base = defaultSoftStrategy(policy);
+  const changed = candidateMutations(base).find(row => row.changedPaths[0] === 'discovery.minMarketCap' && row.direction === 1).strategy;
+  const day = 24 * 60 * 60_000;
+  const trades = [];
+  for (let index = 0; index < 10; index++) {
+    const signal = createShadowTrade(candidate({ address: ('s' + index).padEnd(32, '1'), marketCap: index ? 40_000 : 10_500 }),
+      { cohort: 'signal', signalAt: day + index, policy, strategy: base });
+    const control = createShadowTrade(candidate({ address: ('c' + index).padEnd(32, '2'), status: 'WAIT_RECHECK' }),
+      { cohort: 'control', signalAt: day + index, policy, strategy: base });
+    signal.entry = { targetAt: signal.signalAt + 60_000, at: signal.signalAt + 60_000, price: 1 };
+    control.entry = { targetAt: control.signalAt + 60_000, at: control.signalAt + 60_000, price: 1 };
+    signal.matchedTradeId = control.id; control.matchedTradeId = signal.id;
+    for (const key of ['m5', 'm10', 'm15']) signal.samples[key] = { conservativeReturn: .05 };
+    if (index < 4) for (const key of ['m5', 'm10', 'm15']) control.samples[key] = { conservativeReturn: .01 };
+    trades.push(signal, control);
+  }
+  const metrics = comparisonMetrics(trades, base, changed, 0, 'paired', 3 * day);
+  assert.ok(metrics.completed15m <= 10);
+  assert.equal(metrics.matchedPairs, 3);
+  assert.equal(metrics.bootstrapStrata >= 1, true);
+});
+
+test('automationTick promotes only from future completed signal-control populations', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-automatic-e2e-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    const challenger = candidateMutations(lab.effectiveStrategy())
+      .find(row => row.changedPaths[0] === 'discovery.minMarketCap' && row.direction === 1).strategy;
+    lab.startChallenger(challenger, 1_000);
+    const start = 2_000, span = 2 * 24 * 60 * 60_000;
+    for (let index = 0; index < 240; index++) {
+      const good = index % 3 === 0;
+      const signalAt = start + Math.floor(index * span / 239);
+      const chain = index % 2 ? 'base' : 'sol';
+      const signal = createShadowTrade(candidate({
+        chain, address: `signal-${index}`.padEnd(32, '1'), marketCap: good ? 40_000 : 10_500
+      }), { cohort: 'signal', signalAt, policy, strategy: lab.effectiveStrategy() });
+      const control = createShadowTrade(candidate({
+        chain, address: `control-${index}`.padEnd(32, '2'), status: 'WAIT_RECHECK', marketCap: good ? 40_000 : 10_500
+      }), { cohort: 'control', signalAt, policy, strategy: lab.effectiveStrategy() });
+      signal.entry = { targetAt: signalAt + 60_000, at: signalAt + 60_000, price: 1 };
+      control.entry = { targetAt: signalAt + 60_000, at: signalAt + 60_000, price: 1 };
+      signal.matchedTradeId = control.id; control.matchedTradeId = signal.id;
+      for (const key of ['m5', 'm10', 'm15']) {
+        signal.samples[key] = { conservativeReturn: good ? .08 : -.08 };
+        control.samples[key] = { conservativeReturn: 0 };
+      }
+      lab.state.trades.push(signal, control);
+    }
+    const result = lab.automationTick(start + span + 60 * 60_000);
+    assert.equal(result.action, 'promoted');
+    assert.equal(result.metrics.completed15m, 80);
+    assert.equal(result.metrics.matchedPairs, 80);
+    assert.ok(result.metrics.bootstrapLower > 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('low coverage keeps a challenger collecting and malformed persisted strategy repairs safely', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-repair-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    lab.startChallenger(candidateMutations(lab.effectiveStrategy())[0].strategy, 2);
+    const decision = lab.evaluateChallenger({ completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+      coverage: { m5: .7, m10: .7, m15: .7 }, weightedMedianUplift: .02,
+      weightedHitRateUplift: .04, bootstrapLower: .01, worstP10Regression: 0 }, 3);
+    assert.equal(decision.rejected, undefined);
+    assert.ok(lab.state.challenger);
+
+    fs.writeFileSync(path.join(dir, 'factor-lab.json'), JSON.stringify({ version: 1, champion: null, trades: [], history: [] }));
+    const repaired = new FactorLab(dir, { policy, now: () => 4 });
+    assert.ok(repaired.effectiveStrategy());
+    assert.equal(repaired.state.history.at(-1).type, 'STATE_REPAIRED');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

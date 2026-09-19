@@ -267,4 +267,5 @@ test('固定周期因子实验室使用紧凑表格并按需加载明细', () =>
   const start = html.indexOf('id="factorLabPanel"');
   const end = html.indexOf('<article class="panel wide">', start + 30);
   assert.doesNotMatch(html.slice(start, end), /class="card/);
+  assert.match(html, /Number\.isFinite\(Number\(row\.entry\.price\)\)/);
 });

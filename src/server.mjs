@@ -391,6 +391,36 @@ function publicFactorLabSummary(source = {}) {
   };
 }
 
+function factorLabParameters(searchParams, supportedChains) {
+  const entries = [...searchParams.entries()];
+  const view = searchParams.get('view') || 'summary';
+  const allowedByView = {
+    summary: new Set(['view']),
+    factors: new Set(['view', 'chain', 'strategyVersion', 'horizon', 'limit', 'cursor']),
+    trades: new Set(['view', 'chain', 'cohort', 'strategyVersion', 'horizon', 'result', 'limit', 'cursor']),
+    history: new Set(['view', 'limit', 'cursor'])
+  };
+  const allowed = allowedByView[view];
+  if (!allowed) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  const seen = new Set();
+  for (const [key] of entries) {
+    if (!allowed.has(key) || seen.has(key)) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+    seen.add(key);
+  }
+  const result = Object.fromEntries(entries);
+  if (result.chain && !allowedChainIds(supportedChains).has(result.chain)) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  if (result.horizon && !['m5', 'm10', 'm15', 'm30', 'h1', 'h2', 'h24'].includes(result.horizon)) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  if (result.cohort && !['signal', 'control', 'hard_reject'].includes(result.cohort)) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  if (result.result && !['profit', 'loss', 'missing'].includes(result.result)) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  if (result.strategyVersion && (result.strategyVersion.length > 64 || !/^[a-f0-9]+$/i.test(result.strategyVersion))) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  for (const key of ['limit', 'cursor']) {
+    if (result[key] !== undefined && !/^\d+$/.test(result[key])) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  }
+  if (result.limit !== undefined && (Number(result.limit) < 1 || Number(result.limit) > 100)) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  if (result.cursor !== undefined && Number(result.cursor) > 1_000_000) throw Object.assign(new Error('invalid_factor_lab_query'), { statusCode: 400 });
+  return result;
+}
+
 export function toPublicStatus(source = {}) {
   const status = text(source.status, 32) || 'STARTING';
   const requestedActiveChain = text(source.activeChain || source.policy?.chain, 32).toLowerCase();
@@ -798,9 +828,7 @@ export function createServer({ state, settings, controls, factorLab, switchChain
     if (url.pathname === '/api/factor-lab') {
       if (!factorLab) return sendJson(res, 503, { error: 'factor_lab_unavailable' }, csp);
       try {
-        const chain = url.searchParams.get('chain') || '';
-        if (chain && !allowedChainIds(supportedChains).has(chain)) return sendJson(res, 400, { error: 'unsupported_chain' }, csp);
-        return sendJson(res, 200, factorLab.query(Object.fromEntries(url.searchParams.entries())), csp);
+        return sendJson(res, 200, factorLab.query(factorLabParameters(url.searchParams, supportedChains)), csp);
       } catch (error) {
         return sendJson(res, error?.statusCode === 400 ? 400 : 500, { error: error?.statusCode === 400 ? 'invalid_factor_lab_query' : 'factor_lab_unavailable' }, csp);
       }

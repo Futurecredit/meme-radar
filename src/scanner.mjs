@@ -89,6 +89,8 @@ function publicToken(row, screen, chain) {
     ageSec: screen.ageSec,
     priorityBand: screen.priorityBand,
     discoveryScore: screen.score,
+    discoverySmartWallets: screen.signals?.smartDegenCount,
+    discoveryKolOnly: screen.signals?.kolOnly,
     holders: num(row.holder_count),
     volume1h: num(first(row.volume_1h, row.volume)),
     buys: num(first(row.buys_24h, row.buys)),

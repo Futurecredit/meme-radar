@@ -2286,7 +2286,7 @@
         );
         byId('factorLabTrades').innerHTML = factorLabTable(
           ['时间','代币','链','分组','入场价','10m净收益','动态成本','策略'], trades,
-          function (row) { const sample = row.samples && row.samples.m10 || {}; return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.cohort), escapeHtml(row.entry && row.entry.price !== null ? String(row.entry.price) : '--'), escapeHtml(formatSignedPercent(sample.netReturn)), escapeHtml(formatSignedPercent(sample.dynamicCostRate)), escapeHtml(shortVersion(row.strategyVersion))]; }
+          function (row) { const sample = row.samples && row.samples.m10 || {}; return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.cohort), escapeHtml(row.entry && Number.isFinite(Number(row.entry.price)) ? String(row.entry.price) : '--'), escapeHtml(formatSignedPercent(sample.netReturn)), escapeHtml(formatSignedPercent(sample.dynamicCostRate)), escapeHtml(shortVersion(row.strategyVersion))]; }
         );
         byId('factorLabHistory').innerHTML = factorLabTable(
           ['时间','事件','策略','变更','原因'], history,

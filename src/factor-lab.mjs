@@ -46,9 +46,10 @@ function clone(value) {
 }
 
 export function defaultSoftStrategy(policy) {
+  const discovery = Object.fromEntries(SOFT_DISCOVERY_KEYS.map(key => [key, policy.discovery[key]]));
   return Object.freeze({
     version: 1,
-    discovery: Object.freeze({ ...clone(policy.discovery) }),
+    discovery: Object.freeze(discovery),
     weights: Object.freeze({
       priorityBand: 35,
       ordinaryBand: 10,
@@ -69,9 +70,9 @@ export function strategyFingerprint(strategy) {
   return hash(JSON.stringify(strategy)).slice(0, 24);
 }
 
-const DISCOVERY_KEYS = Object.freeze([
+const SOFT_DISCOVERY_KEYS = Object.freeze([
   'minMarketCap', 'maxMarketCap', 'priorityMinMarketCap', 'priorityMaxMarketCap',
-  'minLiquidity', 'strictLiquidity', 'minAgeMinutes', 'maxAgeMinutes'
+  'minLiquidity', 'minAgeMinutes', 'maxAgeMinutes'
 ]);
 const WEIGHT_KEYS = Object.freeze([
   'priorityBand', 'ordinaryBand', 'liquidityCap', 'liquidityDivisor',
@@ -90,15 +91,14 @@ function requireExactKeys(value, keys) {
 
 export function validateSoftStrategy(strategy) {
   if (!requireExactKeys(strategy, ['version', 'discovery', 'weights']) || strategy.version !== 1
-    || !requireExactKeys(strategy.discovery, DISCOVERY_KEYS) || !requireExactKeys(strategy.weights, WEIGHT_KEYS)) return false;
-  if ([...DISCOVERY_KEYS.map(key => strategy.discovery[key]), ...WEIGHT_KEYS.map(key => strategy.weights[key])]
+    || !requireExactKeys(strategy.discovery, SOFT_DISCOVERY_KEYS) || !requireExactKeys(strategy.weights, WEIGHT_KEYS)) return false;
+  if ([...SOFT_DISCOVERY_KEYS.map(key => strategy.discovery[key]), ...WEIGHT_KEYS.map(key => strategy.weights[key])]
     .some(value => !Number.isFinite(value) || value < 0)) return false;
   const d = strategy.discovery;
   return d.minMarketCap < d.maxMarketCap
     && d.priorityMinMarketCap >= d.minMarketCap
     && d.priorityMaxMarketCap <= d.maxMarketCap
     && d.priorityMinMarketCap < d.priorityMaxMarketCap
-    && d.strictLiquidity >= d.minLiquidity
     && d.minAgeMinutes >= 1 && d.minAgeMinutes < d.maxAgeMinutes && d.maxAgeMinutes <= 43_200;
 }
 
@@ -111,7 +111,7 @@ function setPath(source, section, key, value) {
 export function candidateMutations(strategy) {
   if (!validateSoftStrategy(strategy)) return [];
   const rows = [];
-  for (const [section, keys] of [['weights', MUTABLE_WEIGHT_KEYS], ['discovery', DISCOVERY_KEYS]]) {
+  for (const [section, keys] of [['weights', MUTABLE_WEIGHT_KEYS], ['discovery', SOFT_DISCOVERY_KEYS]]) {
     for (const key of keys) {
       for (const direction of [-1, 1]) {
         const current = strategy[section][key];
@@ -163,6 +163,33 @@ export function deterministicBootstrap(differences, seed, iterations = 10_000) {
   };
 }
 
+function comparisonBootstrap(baseObservations, nextObservations, seed, iterations = 10_000) {
+  const group = rows => {
+    const groups = new Map();
+    for (const row of rows.filter(item => Number.isFinite(item.value))) {
+      if (!groups.has(row.stratum)) groups.set(row.stratum, []);
+      groups.get(row.stratum).push(row.value);
+    }
+    return groups;
+  };
+  const baseGroups = group(baseObservations), nextGroups = group(nextObservations);
+  const strata = [...nextGroups.keys()].filter(key => baseGroups.has(key));
+  if (!strata.length) return { lower: null, upper: null, iterations: 0, strata: 0 };
+  const random = seededRandom(seed), results = [];
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const baseSample = [], nextSample = [];
+    for (const key of strata) {
+      const before = baseGroups.get(key), after = nextGroups.get(key);
+      for (let index = 0; index < before.length; index++) baseSample.push(before[Math.floor(random() * before.length)]);
+      for (let index = 0; index < after.length; index++) nextSample.push(after[Math.floor(random() * after.length)]);
+    }
+    results.push(median(nextSample) - median(baseSample));
+  }
+  results.sort((a, b) => a - b);
+  return { lower: results[Math.floor((results.length - 1) * .025)], upper: results[Math.floor((results.length - 1) * .975)],
+    iterations: results.length, strata: strata.length };
+}
+
 export function applySoftStrategy(runtimeSettings, strategy) {
   const discovery = strategy?.discovery || {};
   return Object.freeze({
@@ -172,7 +199,6 @@ export function applySoftStrategy(runtimeSettings, strategy) {
     priorityMinMarketCap: discovery.priorityMinMarketCap ?? runtimeSettings.priorityMinMarketCap,
     priorityMaxMarketCap: discovery.priorityMaxMarketCap ?? runtimeSettings.priorityMaxMarketCap,
     minLiquidity: discovery.minLiquidity ?? runtimeSettings.minLiquidity,
-    strictLiquidity: discovery.strictLiquidity ?? runtimeSettings.strictLiquidity,
     minAgeSec: Number.isFinite(discovery.minAgeMinutes) ? discovery.minAgeMinutes * 60 : runtimeSettings.minAgeSec,
     maxAgeSec: Number.isFinite(discovery.maxAgeMinutes) ? discovery.maxAgeMinutes * 60 : runtimeSettings.maxAgeSec,
     factorWeights: clone(strategy?.weights || {})
@@ -203,8 +229,8 @@ function factorSnapshot(candidate) {
     holders: finite(candidate.holders),
     volume1h: finite(candidate.volume1h),
     priorityBand: category(candidate.priorityBand),
-    smartWallets: finite(candidate.deep?.marketBehavior?.smartWallets ?? candidate.deep?.marketBehavior?.smartDegenCount),
-    kolOnly: category(candidate.deep?.marketBehavior?.kolOnly)
+    smartWallets: finite(candidate.discoverySmartWallets ?? candidate.deep?.marketBehavior?.smartWallets ?? candidate.deep?.marketBehavior?.smartDegenCount),
+    kolOnly: category(candidate.discoveryKolOnly ?? candidate.deep?.marketBehavior?.kolOnly)
   });
 }
 
@@ -238,6 +264,7 @@ export function createShadowTrade(candidate, { cohort, signalAt = Date.now(), po
 export function dueShadowJobs(trades, now = Date.now()) {
   return (trades || []).flatMap(trade => {
     if (!trade.entry?.price) {
+      if (trade.entry?.missingKind) return [];
       if (now >= Number(trade.entry?.targetAt || Infinity) && now >= Number(trade.retries?.entry?.nextAt || 0)) {
         return [{ trade, tradeId: trade.id, kind: 'entry', targetAt: trade.entry.targetAt }];
       }
@@ -361,16 +388,49 @@ function defaultState(policy, now) {
   };
 }
 
+function normalizePersistedStrategy(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const normalized = clone(value);
+  if (normalized.discovery && Object.hasOwn(normalized.discovery, 'strictLiquidity')) delete normalized.discovery.strictLiquidity;
+  return validateSoftStrategy(normalized) ? normalized : null;
+}
+
 function migrateState(raw, policy, now) {
   const base = defaultState(policy, now);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
+  let repaired = raw.version !== FACTOR_LAB_VERSION;
+  if (raw.champion?.strategy?.discovery && Object.hasOwn(raw.champion.strategy.discovery, 'strictLiquidity')) repaired = true;
+  const championStrategy = normalizePersistedStrategy(raw.champion?.strategy);
+  if (!championStrategy) repaired = true;
+  const champion = championStrategy
+    ? { version: strategyFingerprint(championStrategy), strategy: championStrategy, activatedAt: finite(raw.champion?.activatedAt) ?? now }
+    : base.champion;
+  const previousStrategy = normalizePersistedStrategy(raw.previousChampion?.strategy);
+  if (raw.previousChampion && !previousStrategy) repaired = true;
+  const previousChampion = previousStrategy
+    ? { version: strategyFingerprint(previousStrategy), strategy: previousStrategy, activatedAt: finite(raw.previousChampion?.activatedAt) ?? now }
+    : null;
+  const challengerStrategy = normalizePersistedStrategy(raw.challenger?.strategy);
+  const challengerMutation = challengerStrategy && candidateMutations(champion.strategy)
+    .find(row => strategyFingerprint(row.strategy) === strategyFingerprint(challengerStrategy));
+  if (raw.challenger && !challengerMutation) repaired = true;
+  const history = Array.isArray(raw.history) ? raw.history.slice(-1_000) : base.history;
+  if (repaired) history.push({ at: now, type: 'STATE_REPAIRED', strategyVersion: champion.version, reason: 'invalid_or_legacy_state' });
   return {
-    ...base,
-    ...raw,
     version: FACTOR_LAB_VERSION,
-    trades: Array.isArray(raw.trades) ? raw.trades : [],
-    aggregates: Array.isArray(raw.aggregates) ? raw.aggregates : [],
-    history: Array.isArray(raw.history) ? raw.history : base.history
+    autoPromotionEnabled: raw.autoPromotionEnabled !== false,
+    champion,
+    previousChampion,
+    challenger: challengerMutation ? {
+      version: strategyFingerprint(challengerMutation.strategy), strategy: challengerMutation.strategy,
+      baselineVersion: champion.version, createdAt: finite(raw.challenger?.createdAt) ?? now,
+      changedPaths: challengerMutation.changedPaths, direction: challengerMutation.direction
+    } : null,
+    trades: Array.isArray(raw.trades) ? raw.trades.filter(row => row && typeof row === 'object').slice(-MAX_TRADES) : [],
+    aggregates: Array.isArray(raw.aggregates) ? raw.aggregates.slice(-1_000) : [],
+    history,
+    lastPromotionAt: finite(raw.lastPromotionAt) ?? 0,
+    disabledReason: typeof raw.disabledReason === 'string' ? raw.disabledReason.slice(0, 80) : ''
   };
 }
 
@@ -393,10 +453,41 @@ function strategyAccepts(trade, strategy) {
     && finite(f.ageSec) >= d.minAgeMinutes * 60 && finite(f.ageSec) <= d.maxAgeMinutes * 60;
 }
 
-function strategyPerformance(trades, strategy, since = 0, now = Date.now()) {
-  const rows = trades.filter(trade => trade.cohort !== 'hard_reject' && trade.signalAt >= since && strategyAccepts(trade, strategy));
+function strategyScore(trade, strategy) {
+  const f = trade.factors || {}, w = strategy.weights, d = strategy.discovery;
+  const priority = finite(f.marketCap) >= d.priorityMinMarketCap && finite(f.marketCap) <= d.priorityMaxMarketCap;
+  const smart = finite(f.smartWallets);
+  return (priority ? w.priorityBand : w.ordinaryBand)
+    + Math.min(w.liquidityCap, Number(finite(f.liquidity) || 0) / Math.max(1, w.liquidityDivisor))
+    + Math.min(w.volumeCap, Number(finite(f.volume1h) || 0) / Math.max(1, w.volumeDivisor))
+    + Math.min(w.holdersCap, Number(finite(f.holders) || 0) / Math.max(1, w.holdersDivisor))
+    + (smart >= 3 ? w.smartThree : smart === 2 ? w.smartTwo : 0)
+    - (f.kolOnly === true ? w.kolPenalty : 0);
+}
+
+function replaySelection(trades, strategy, since) {
+  const signals = trades.filter(trade => trade.cohort === 'signal' && trade.signalAt >= since);
+  const groups = new Map();
+  for (const trade of signals) {
+    const key = `${trade.chain || 'unknown'}:${Math.floor(Number(trade.signalAt || 0) / DAY)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(trade);
+  }
+  return [...groups.values()].flatMap(group => {
+    const quota = Math.max(1, Math.ceil(group.length * 0.80));
+    return group.filter(trade => strategyAccepts(trade, strategy)).sort((a, b) =>
+      strategyScore(b, strategy) - strategyScore(a, strategy) || Number(a.signalAt) - Number(b.signalAt)
+    ).slice(0, quota);
+  });
+}
+
+export function strategyPerformance(trades, strategy, since = 0, now = Date.now()) {
+  const rows = replaySelection(trades, strategy, since);
   const horizons = Object.fromEntries(MAIN_HORIZONS.map(key => {
-    const eligible = rows.filter(row => row.entry?.at && now >= row.entry.at + SHADOW_HORIZONS[key]);
+    const eligible = rows.filter(row => {
+      const start = finite(row.entry?.at) ?? finite(row.entry?.targetAt);
+      return start !== null && now >= start + SHADOW_HORIZONS[key];
+    });
     const values = eligible.map(row => row.samples?.[key]?.conservativeReturn).filter(Number.isFinite);
     return [key, {
       eligible: eligible.length,
@@ -419,29 +510,34 @@ function strategyPerformance(trades, strategy, since = 0, now = Date.now()) {
   };
 }
 
-function comparisonMetrics(trades, champion, challenger, since, experimentId, now) {
+function pairedExcess(trade, trades) {
+  const control = trades.find(row => row.id === trade.matchedTradeId && row.cohort === 'control');
+  if (!control) return null;
+  const deltas = MAIN_HORIZONS.map(key => {
+    const signal = trade.samples?.[key]?.conservativeReturn;
+    const baseline = control.samples?.[key]?.conservativeReturn;
+    return Number.isFinite(signal) && Number.isFinite(baseline) ? signal - baseline : null;
+  });
+  return deltas.every(Number.isFinite) ? MAIN_HORIZONS.reduce((sum, key, index) => sum + WEIGHTS[key] * deltas[index], 0) : null;
+}
+
+export function comparisonMetrics(trades, champion, challenger, since, experimentId, now) {
   const base = strategyPerformance(trades, champion, since, now);
   const next = strategyPerformance(trades, challenger, since, now);
-  const differences = [];
-  for (const key of MAIN_HORIZONS) {
-    const baseline = Number(base.horizons[key].median ?? 0);
-    for (const trade of next.rows) {
-      const value = trade.samples?.[key]?.conservativeReturn;
-      if (Number.isFinite(value)) differences.push({
-        value: (value - baseline) * WEIGHTS[key],
-        stratum: `${trade.chain || 'unknown'}:${Math.floor(Number(trade.signalAt || 0) / DAY)}`
-      });
-    }
-  }
-  const confidence = deterministicBootstrap(differences, experimentId, 10_000);
+  const observations = rows => rows.map(row => ({ value: pairedExcess(row, trades),
+    stratum: `${row.chain || 'unknown'}:${Math.floor(Number(row.signalAt || 0) / DAY)}` })).filter(item => Number.isFinite(item.value));
+  const basePairs = observations(base.rows), nextPairs = observations(next.rows);
+  const confidence = comparisonBootstrap(basePairs, nextPairs, experimentId, 10_000);
+  const matchedPairs = next.rows.filter(row => Number.isFinite(pairedExcess(row, trades))).length;
   return {
     completed15m: next.completed15m,
-    matchedPairs: trades.filter(row => row.cohort === 'signal' && row.matchedTradeId && row.signalAt >= since).length,
+    matchedPairs,
     spanMs: next.rows.length ? Math.max(...next.rows.map(row => row.signalAt)) - Math.min(...next.rows.map(row => row.signalAt)) : 0,
     coverage: Object.fromEntries(MAIN_HORIZONS.map(key => [key, next.horizons[key].coverage])),
     weightedMedianUplift: next.weightedMedian - base.weightedMedian,
     weightedHitRateUplift: next.weightedHitRate - base.weightedHitRate,
     bootstrapLower: confidence.lower,
+    bootstrapStrata: confidence.strata,
     worstP10Regression: Math.max(...MAIN_HORIZONS.map(key =>
       Number(base.horizons[key].p10 ?? 0) - Number(next.horizons[key].p10 ?? 0)
     )),
@@ -479,7 +575,8 @@ function publicTrade(trade) {
       smartWallets: finite(factors.smartWallets), kolOnly: typeof factors.kolOnly === 'boolean' ? factors.kolOnly : null
     },
     entry: trade.entry?.price ? { targetAt: finite(trade.entry.targetAt), at: finite(trade.entry.at), price: finite(trade.entry.price),
-      liquidity: finite(trade.entry.liquidity), source: String(trade.entry.source || '').slice(0, 40) } : { targetAt: finite(trade.entry?.targetAt) },
+      liquidity: finite(trade.entry.liquidity), source: String(trade.entry.source || '').slice(0, 40) }
+      : { targetAt: finite(trade.entry?.targetAt), missingAt: finite(trade.entry?.missingAt), missingKind: String(trade.entry?.missingKind || '').slice(0, 40) },
     samples: Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => [key, publicSample(trade.samples?.[key])]))
   };
 }
@@ -636,7 +733,7 @@ export class FactorLab {
     if (!this.state.autoPromotionEnabled) return { promoted: false, reasons: ['auto_promotion_paused', ...decision.reasons] };
     if (this.state.lastPromotionAt && now - this.state.lastPromotionAt < DAY) return { promoted: false, reasons: ['cooldown', ...decision.reasons] };
     if (!decision.promote) {
-      const readiness = new Set(['insufficient_signal_samples', 'insufficient_matched_pairs', 'insufficient_time_span', 'coverage_m5', 'coverage_m10', 'coverage_m15']);
+      const readiness = new Set(['insufficient_signal_samples', 'insufficient_matched_pairs', 'insufficient_time_span', 'coverage']);
       if (!decision.reasons.some(reason => readiness.has(reason))) {
         const rejected = this.state.challenger;
         this.state.challenger = null;
@@ -769,7 +866,10 @@ export class FactorLab {
         const key = job.kind === 'entry' ? 'entry' : job.key;
         const attempts = Number(job.trade.retries?.[key]?.attempts || 0) + 1;
         job.trade.retries ||= {};
-        job.trade.retries[key] = {
+        if (job.kind === 'entry' && (attempts >= 5 || now() - job.targetAt >= 30 * 60_000)) {
+          job.trade.entry = { ...job.trade.entry, missingKind: 'entry_unavailable', missingAt: now() };
+          delete job.trade.retries.entry;
+        } else job.trade.retries[key] = {
           attempts, code: failure.code,
           nextAt: now() + Math.min(60 * 60_000, 120_000 * 2 ** Math.min(attempts - 1, 5))
         };
@@ -815,7 +915,10 @@ export class FactorLab {
   summary(now = this.now()) {
     const signals = this.state.trades.filter(row => row.cohort === 'signal');
     const horizons = Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => {
-      const eligible = signals.filter(row => row.entry?.at && now >= row.entry.at + SHADOW_HORIZONS[key]);
+      const eligible = signals.filter(row => {
+        const start = finite(row.entry?.at) ?? finite(row.entry?.targetAt);
+        return start !== null && now >= start + SHADOW_HORIZONS[key];
+      });
       const observed = eligible.map(row => row.samples?.[key]?.observedReturn).filter(Number.isFinite);
       const conservative = eligible.map(row => row.samples?.[key]?.conservativeReturn).filter(Number.isFinite);
       return [key, {
