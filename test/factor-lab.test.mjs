@@ -197,6 +197,7 @@ test('candidate generation changes exactly one soft value by 10 percent and reje
     assert.doesNotMatch(mutation.changedPaths[0], /^weights\.|priorityMinMarketCap|priorityMaxMarketCap/);
     assert.equal(applySoftStrategy({ strictLiquidity: 8_000 }, mutation.strategy).strictLiquidity, 8_000);
   }
+  assert.equal(mutations.some(row => row.changedPaths[0] === 'discovery.maxAgeMinutes' && row.direction === 1), false);
   const marketCapUp = mutations.find(row => row.changedPaths[0] === 'discovery.minMarketCap' && row.direction === 1);
   assert.equal(marketCapUp.strategy.discovery.minMarketCap, 11_000);
 

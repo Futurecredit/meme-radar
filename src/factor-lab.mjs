@@ -113,6 +113,7 @@ export function candidateMutations(strategy) {
   for (const [section, keys] of [['discovery', AUTOMATIC_THRESHOLD_KEYS]]) {
     for (const key of keys) {
       for (const direction of [-1, 1]) {
+        if (key === 'maxAgeMinutes' && direction === 1) continue;
         const current = strategy[section][key];
         const raw = current * (1 + direction * 0.10);
         const value = section === 'discovery' ? Math.max(key.includes('Age') ? 1 : 0, Math.round(raw)) : Math.round(raw * 1e6) / 1e6;
