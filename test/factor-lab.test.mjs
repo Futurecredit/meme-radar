@@ -1,0 +1,125 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  FactorLab,
+  applyPriceSample,
+  createShadowTrade,
+  defaultSoftStrategy,
+  dueShadowJobs,
+  evaluatePromotion,
+  matchControl,
+  shadowReturn
+} from '../src/factor-lab.mjs';
+
+const policy = {
+  version: 1,
+  discovery: {
+    minMarketCap: 10_000, maxMarketCap: 150_000,
+    priorityMinMarketCap: 20_000, priorityMaxMarketCap: 80_000,
+    minLiquidity: 3_000, strictLiquidity: 8_000,
+    minAgeMinutes: 5, maxAgeMinutes: 10_080
+  },
+  live: { minMarketCap: 10_000, maxMarketCap: 500_000, minLiquidity: 3_000, minAgeMinutes: 5 },
+  scan: { intervalSeconds: 120, maxDeepAuditsPerCycle: 6 }
+};
+
+function candidate(overrides = {}) {
+  return {
+    chain: 'sol', address: '11111111111111111111111111111111', symbol: 'DOG',
+    status: 'X_REVIEW', marketCap: 40_000, liquidity: 10_000, ageSec: 900,
+    discoveryScore: 80, holders: 120, volume1h: 30_000, priorityBand: true,
+    deep: { failed: [], security: { buyTax: 0, sellTax: 0 }, marketBehavior: { smartWallets: 3, kolOnly: false } },
+    ...overrides
+  };
+}
+
+test('shadow trade enters on first completed minute and applies 3% plus liquidity impact', () => {
+  const trade = createShadowTrade(candidate(), { cohort: 'signal', signalAt: 61_000, policy, strategy: defaultSoftStrategy(policy) });
+  assert.equal(trade.entry.targetAt, 120_000);
+  assert.equal(dueShadowJobs([trade], 119_999).length, 0);
+  assert.equal(dueShadowJobs([trade], 120_000)[0].kind, 'entry');
+
+  applyPriceSample(trade, { kind: 'entry', targetAt: 120_000 }, { at: 120_000, price: 1 });
+  assert.equal(trade.entry.price, 1);
+  const five = dueShadowJobs([trade], 420_000).find(job => job.key === 'm5');
+  applyPriceSample(trade, five, { at: 420_000, price: 1.1 });
+  assert.ok(Math.abs(trade.samples.m5.netReturn - 0.02644) < 1e-9);
+  assert.equal(trade.samples.m5.fixedCostRate, 0.03);
+  assert.ok(Math.abs(trade.samples.m5.dynamicCostRate - 0.0396) < 1e-9);
+});
+
+test('late or missing prices are never backfilled and confirmed untradeable is conservative -100%', () => {
+  const trade = createShadowTrade(candidate(), { cohort: 'signal', signalAt: 1, policy, strategy: defaultSoftStrategy(policy) });
+  applyPriceSample(trade, { kind: 'entry', targetAt: 60_000 }, { at: 60_000, price: 1 });
+  assert.equal(applyPriceSample(trade, { kind: 'exit', key: 'm5', targetAt: 360_000 }, { at: 500_000, price: 2 }), false);
+  assert.equal(trade.samples.m5, undefined);
+  applyPriceSample(trade, { kind: 'exit', key: 'm5', targetAt: 360_000 }, null, { code: 'UNTRADEABLE', confirmed: true });
+  assert.equal(trade.samples.m5.observedReturn, null);
+  assert.equal(trade.samples.m5.conservativeReturn, -1);
+  assert.equal(trade.samples.m5.missingKind, 'confirmed_untradeable');
+});
+
+test('chase risk is retained and a near WAIT_RECHECK control is matched once', () => {
+  const signal = createShadowTrade(candidate({ price: 1 }), { cohort: 'signal', signalAt: 600_000, policy, strategy: defaultSoftStrategy(policy) });
+  applyPriceSample(signal, { kind: 'entry', targetAt: 660_000 }, { at: 660_000, price: 1.25 });
+  assert.equal(signal.chaseRisk, true);
+
+  const controls = [
+    createShadowTrade(candidate({ address: '22222222222222222222222222222222', status: 'WAIT_RECHECK', marketCap: 42_000, liquidity: 9_500 }), { cohort: 'control', signalAt: 605_000, policy, strategy: defaultSoftStrategy(policy) }),
+    createShadowTrade(candidate({ address: '33333333333333333333333333333333', status: 'WAIT_RECHECK', marketCap: 140_000, liquidity: 3_000 }), { cohort: 'control', signalAt: 605_000, policy, strategy: defaultSoftStrategy(policy) })
+  ];
+  const matched = matchControl(signal, controls);
+  assert.equal(matched.address, '22222222222222222222222222222222');
+  assert.equal(matchControl(signal, controls), null);
+});
+
+test('promotion requires future sample gates, uplift, confidence and protected downside', () => {
+  const eligible = evaluatePromotion({
+    completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+    coverage: { m5: .9, m10: .9, m15: .9 },
+    weightedMedianUplift: .011, weightedHitRateUplift: .04,
+    bootstrapLower: .001, worstP10Regression: .019
+  });
+  assert.equal(eligible.promote, true);
+  assert.deepEqual(eligible.reasons, []);
+  const unsafe = evaluatePromotion({
+    completed15m: 500, matchedPairs: 200, spanMs: 7 * 24 * 60 * 60_000,
+    coverage: { m5: 1, m10: 1, m15: 1 },
+    weightedMedianUplift: .5, weightedHitRateUplift: .5,
+    bootstrapLower: .2, worstP10Regression: .021
+  });
+  assert.equal(unsafe.promote, false);
+  assert.ok(unsafe.reasons.includes('tail_risk'));
+});
+
+test('soft strategy contains no safety gates and return calculation is bounded', () => {
+  const strategy = defaultSoftStrategy(policy);
+  const encoded = JSON.stringify(strategy);
+  assert.doesNotMatch(encoded, /tax|honeypot|owner|lpLocked|insider|bot|linked/i);
+  assert.equal(shadowReturn({ entryPrice: 1, exitPrice: 0, entryLiquidity: 10_000 }), -1);
+  assert.equal(strategy.discovery.minMarketCap, 10_000);
+  assert.equal(strategy.weights.priorityBand, 35);
+});
+
+test('factor lab persists separately, recovers backup and retains at most 5000 recent trades', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-lab-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 10_000 });
+    lab.recordCandidate(candidate(), { now: 10_000 });
+    assert.equal(lab.state.trades.length, 1);
+    assert.equal(fs.existsSync(path.join(dir, 'factor-lab.json')), true);
+    lab.save();
+    fs.writeFileSync(path.join(dir, 'factor-lab.json'), '{broken');
+    const recovered = new FactorLab(dir, { policy, now: () => 20_000 });
+    assert.equal(recovered.state.recoveredFromBackup, true);
+    assert.equal(recovered.state.trades.length, 1);
+
+    recovered.state.trades = Array.from({ length: 5001 }, (_, i) => ({ id: String(i), signalAt: i, cohort: 'signal', samples: {} }));
+    recovered.prune(5002);
+    assert.equal(recovered.state.trades.length, 5000);
+    assert.equal(recovered.state.trades[0].id, '1');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
