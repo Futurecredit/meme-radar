@@ -118,7 +118,7 @@ test('factor quality query applies the requested horizon', () => {
 
 test('promotion requires future sample gates, uplift, confidence and protected downside', () => {
   const eligible = evaluatePromotion({
-    completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+    completed15m: 80, matchedPairs: 40, comparablePairs: 40, spanMs: 24 * 60 * 60_000,
     coverage: { m5: .9, m10: .9, m15: .9 },
     weightedMedianUplift: .011, weightedHitRateUplift: .04,
     bootstrapLower: .001, worstP10Regression: .019
@@ -126,7 +126,7 @@ test('promotion requires future sample gates, uplift, confidence and protected d
   assert.equal(eligible.promote, true);
   assert.deepEqual(eligible.reasons, []);
   const unsafe = evaluatePromotion({
-    completed15m: 500, matchedPairs: 200, spanMs: 7 * 24 * 60 * 60_000,
+    completed15m: 500, matchedPairs: 200, comparablePairs: 200, spanMs: 7 * 24 * 60 * 60_000,
     coverage: { m5: 1, m10: 1, m15: 1 },
     weightedMedianUplift: .5, weightedHitRateUplift: .5,
     bootstrapLower: .2, worstP10Regression: .021
@@ -189,15 +189,16 @@ test('candidate generation changes exactly one soft value by 10 percent and reje
   const strategy = defaultSoftStrategy(policy);
   assert.equal(Object.hasOwn(strategy.discovery, 'strictLiquidity'), false);
   const mutations = candidateMutations(strategy);
-  assert.ok(mutations.length > 10);
+  assert.ok(mutations.length >= 8);
   for (const mutation of mutations) {
     assert.equal(mutation.changedPaths.length, 1);
     assert.doesNotMatch(mutation.changedPaths[0], /(?:^|\.)(?:tax|honeypot|owner|lpLocked|insider|bot|linked)(?:$|\.)/i);
     assert.notEqual(mutation.changedPaths[0], 'discovery.strictLiquidity');
+    assert.doesNotMatch(mutation.changedPaths[0], /^weights\.|priorityMinMarketCap|priorityMaxMarketCap/);
     assert.equal(applySoftStrategy({ strictLiquidity: 8_000 }, mutation.strategy).strictLiquidity, 8_000);
   }
-  const priorityUp = mutations.find(row => row.changedPaths[0] === 'weights.priorityBand' && row.direction === 1);
-  assert.equal(priorityUp.strategy.weights.priorityBand, 38.5);
+  const marketCapUp = mutations.find(row => row.changedPaths[0] === 'discovery.minMarketCap' && row.direction === 1);
+  assert.equal(marketCapUp.strategy.discovery.minMarketCap, 11_000);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-safety-'));
   try {
@@ -206,14 +207,14 @@ test('candidate generation changes exactly one soft value by 10 percent and reje
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('strategy replay uses signals only, counts missing entries in coverage and makes weights observable', () => {
+test('strategy replay uses signals only, counts missing entries and evaluates only supportable thresholds', () => {
   const base = defaultSoftStrategy(policy);
-  const weightMutation = candidateMutations(base).find(row => row.changedPaths[0] === 'weights.priorityBand' && row.direction === -1).strategy;
+  const thresholdMutation = candidateMutations(base).find(row => row.changedPaths[0] === 'discovery.minMarketCap' && row.direction === 1).strategy;
   const at = 2 * 24 * 60 * 60_000;
   const rows = Array.from({ length: 5 }, (_, index) => {
     const boundary = index >= 3;
     return createShadowTrade(candidate({
-      address: String(index + 1).repeat(32), marketCap: index === 4 ? 100_000 : 40_000,
+      address: String(index + 1).repeat(32), marketCap: index === 4 ? 10_500 : 40_000,
       liquidity: index === 4 ? 25_000 : boundary ? 3_000 : 30_000,
       volume1h: boundary ? 0 : 50_000, holders: boundary ? 0 : 500,
       deep: { marketBehavior: { smartWallets: boundary ? 0 : 3, kolOnly: false } }
@@ -228,10 +229,10 @@ test('strategy replay uses signals only, counts missing entries in coverage and 
   }
   const now = at + 60 * 60_000;
   const baseResult = strategyPerformance(rows, base, 0, now);
-  const changedResult = strategyPerformance(rows, weightMutation, 0, now);
+  const changedResult = strategyPerformance(rows, thresholdMutation, 0, now);
   assert.ok(baseResult.rows.every(row => row.cohort === 'signal'));
-  assert.equal(baseResult.horizons.m15.eligible, 4);
-  assert.equal(baseResult.horizons.m15.completed, 3);
+  assert.equal(baseResult.horizons.m15.eligible, 5);
+  assert.equal(baseResult.horizons.m15.completed, 4);
   assert.notDeepEqual(baseResult.rows.map(row => row.id), changedResult.rows.map(row => row.id));
 });
 
@@ -255,6 +256,7 @@ test('promotion metrics require completed signal-control pairs and bootstrap who
   const metrics = comparisonMetrics(trades, base, changed, 0, 'paired', 3 * day);
   assert.ok(metrics.completed15m <= 10);
   assert.equal(metrics.matchedPairs, 3);
+  assert.equal(metrics.comparablePairs, 3);
   assert.equal(metrics.bootstrapStrata >= 1, true);
 });
 
@@ -298,7 +300,7 @@ test('low coverage keeps a challenger collecting and malformed persisted strateg
   try {
     const lab = new FactorLab(dir, { policy, now: () => 1 });
     lab.startChallenger(candidateMutations(lab.effectiveStrategy())[0].strategy, 2);
-    const decision = lab.evaluateChallenger({ completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+    const decision = lab.evaluateChallenger({ completed15m: 80, matchedPairs: 40, comparablePairs: 40, spanMs: 24 * 60 * 60_000,
       coverage: { m5: .7, m10: .7, m15: .7 }, weightedMedianUplift: .02,
       weightedHitRateUplift: .04, bootstrapLower: .01, worstP10Regression: 0 }, 3);
     assert.equal(decision.rejected, undefined);
@@ -333,7 +335,7 @@ test('deterministic bootstrap is repeatable and automatic promotion can roll bac
     const challenger = candidateMutations(lab.effectiveStrategy())[0].strategy;
     lab.startChallenger(challenger, 2);
     const promoted = lab.evaluateChallenger({
-      completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+      completed15m: 80, matchedPairs: 40, comparablePairs: 40, spanMs: 24 * 60 * 60_000,
       coverage: { m5: .9, m10: .9, m15: .9 }, weightedMedianUplift: .02,
       weightedHitRateUplift: .04, bootstrapLower: .01, worstP10Regression: 0
     }, 3);
@@ -352,7 +354,7 @@ test('mature failed challengers release the slot and manual baselines preserve a
     const lab = new FactorLab(dir, { policy, now: () => 1 });
     lab.startChallenger(candidateMutations(lab.effectiveStrategy())[0].strategy, 2);
     const rejected = lab.evaluateChallenger({
-      completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,
+      completed15m: 80, matchedPairs: 40, comparablePairs: 40, spanMs: 24 * 60 * 60_000,
       coverage: { m5: .9, m10: .9, m15: .9 }, weightedMedianUplift: 0,
       weightedHitRateUplift: 0, bootstrapLower: -.01, worstP10Regression: 0
     }, 3);

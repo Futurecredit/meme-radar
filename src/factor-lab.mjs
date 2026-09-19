@@ -79,9 +79,8 @@ const WEIGHT_KEYS = Object.freeze([
   'volumeCap', 'volumeDivisor', 'holdersCap', 'holdersDivisor',
   'smartTwo', 'smartThree', 'kolPenalty'
 ]);
-const MUTABLE_WEIGHT_KEYS = Object.freeze([
-  'priorityBand', 'ordinaryBand', 'liquidityCap', 'volumeCap',
-  'holdersCap', 'smartTwo', 'smartThree', 'kolPenalty'
+const AUTOMATIC_THRESHOLD_KEYS = Object.freeze([
+  'minMarketCap', 'maxMarketCap', 'minLiquidity', 'minAgeMinutes', 'maxAgeMinutes'
 ]);
 
 function requireExactKeys(value, keys) {
@@ -111,7 +110,7 @@ function setPath(source, section, key, value) {
 export function candidateMutations(strategy) {
   if (!validateSoftStrategy(strategy)) return [];
   const rows = [];
-  for (const [section, keys] of [['weights', MUTABLE_WEIGHT_KEYS], ['discovery', SOFT_DISCOVERY_KEYS]]) {
+  for (const [section, keys] of [['discovery', AUTOMATIC_THRESHOLD_KEYS]]) {
     for (const key of keys) {
       for (const direction of [-1, 1]) {
         const current = strategy[section][key];
@@ -174,7 +173,8 @@ function comparisonBootstrap(baseObservations, nextObservations, seed, iteration
   };
   const baseGroups = group(baseObservations), nextGroups = group(nextObservations);
   const strata = [...nextGroups.keys()].filter(key => baseGroups.has(key));
-  if (!strata.length) return { lower: null, upper: null, iterations: 0, strata: 0 };
+  const comparable = strata.reduce((sum, key) => sum + Math.min(baseGroups.get(key).length, nextGroups.get(key).length), 0);
+  if (!strata.length) return { lower: null, upper: null, iterations: 0, strata: 0, comparable: 0 };
   const random = seededRandom(seed), results = [];
   for (let iteration = 0; iteration < iterations; iteration++) {
     const baseSample = [], nextSample = [];
@@ -187,7 +187,7 @@ function comparisonBootstrap(baseObservations, nextObservations, seed, iteration
   }
   results.sort((a, b) => a - b);
   return { lower: results[Math.floor((results.length - 1) * .025)], upper: results[Math.floor((results.length - 1) * .975)],
-    iterations: results.length, strata: strata.length };
+    iterations: results.length, strata: strata.length, comparable };
 }
 
 export function applySoftStrategy(runtimeSettings, strategy) {
@@ -363,6 +363,7 @@ export function evaluatePromotion(metrics = {}) {
   const reasons = [];
   if (Number(metrics.completed15m) < 80) reasons.push('insufficient_signal_samples');
   if (Number(metrics.matchedPairs) < 40) reasons.push('insufficient_matched_pairs');
+  if (Number(metrics.comparablePairs) < 40) reasons.push('insufficient_comparable_pairs');
   if (Number(metrics.spanMs) < DAY) reasons.push('insufficient_time_span');
   if (MAIN_HORIZONS.some(key => Number(metrics.coverage?.[key]) < 0.80)) reasons.push('coverage');
   if (Number(metrics.weightedMedianUplift) < 0.01) reasons.push('median_uplift');
@@ -453,32 +454,8 @@ function strategyAccepts(trade, strategy) {
     && finite(f.ageSec) >= d.minAgeMinutes * 60 && finite(f.ageSec) <= d.maxAgeMinutes * 60;
 }
 
-function strategyScore(trade, strategy) {
-  const f = trade.factors || {}, w = strategy.weights, d = strategy.discovery;
-  const priority = finite(f.marketCap) >= d.priorityMinMarketCap && finite(f.marketCap) <= d.priorityMaxMarketCap;
-  const smart = finite(f.smartWallets);
-  return (priority ? w.priorityBand : w.ordinaryBand)
-    + Math.min(w.liquidityCap, Number(finite(f.liquidity) || 0) / Math.max(1, w.liquidityDivisor))
-    + Math.min(w.volumeCap, Number(finite(f.volume1h) || 0) / Math.max(1, w.volumeDivisor))
-    + Math.min(w.holdersCap, Number(finite(f.holders) || 0) / Math.max(1, w.holdersDivisor))
-    + (smart >= 3 ? w.smartThree : smart === 2 ? w.smartTwo : 0)
-    - (f.kolOnly === true ? w.kolPenalty : 0);
-}
-
 function replaySelection(trades, strategy, since) {
-  const signals = trades.filter(trade => trade.cohort === 'signal' && trade.signalAt >= since);
-  const groups = new Map();
-  for (const trade of signals) {
-    const key = `${trade.chain || 'unknown'}:${Math.floor(Number(trade.signalAt || 0) / DAY)}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(trade);
-  }
-  return [...groups.values()].flatMap(group => {
-    const quota = Math.max(1, Math.ceil(group.length * 0.80));
-    return group.filter(trade => strategyAccepts(trade, strategy)).sort((a, b) =>
-      strategyScore(b, strategy) - strategyScore(a, strategy) || Number(a.signalAt) - Number(b.signalAt)
-    ).slice(0, quota);
-  });
+  return trades.filter(trade => trade.cohort === 'signal' && trade.signalAt >= since && strategyAccepts(trade, strategy));
 }
 
 export function strategyPerformance(trades, strategy, since = 0, now = Date.now()) {
@@ -532,6 +509,7 @@ export function comparisonMetrics(trades, champion, challenger, since, experimen
   return {
     completed15m: next.completed15m,
     matchedPairs,
+    comparablePairs: confidence.comparable,
     spanMs: next.rows.length ? Math.max(...next.rows.map(row => row.signalAt)) - Math.min(...next.rows.map(row => row.signalAt)) : 0,
     coverage: Object.fromEntries(MAIN_HORIZONS.map(key => [key, next.horizons[key].coverage])),
     weightedMedianUplift: next.weightedMedian - base.weightedMedian,
@@ -733,7 +711,7 @@ export class FactorLab {
     if (!this.state.autoPromotionEnabled) return { promoted: false, reasons: ['auto_promotion_paused', ...decision.reasons] };
     if (this.state.lastPromotionAt && now - this.state.lastPromotionAt < DAY) return { promoted: false, reasons: ['cooldown', ...decision.reasons] };
     if (!decision.promote) {
-      const readiness = new Set(['insufficient_signal_samples', 'insufficient_matched_pairs', 'insufficient_time_span', 'coverage']);
+      const readiness = new Set(['insufficient_signal_samples', 'insufficient_matched_pairs', 'insufficient_comparable_pairs', 'insufficient_time_span', 'coverage']);
       if (!decision.reasons.some(reason => readiness.has(reason))) {
         const rejected = this.state.challenger;
         this.state.challenger = null;
@@ -752,7 +730,7 @@ export class FactorLab {
     this.state.lastPromotionAt = now;
     this.state.history.push({ at: now, type: 'STRATEGY_PROMOTED', strategyVersion: this.state.champion.version,
       previousVersion: this.state.previousChampion.version, metrics: {
-        completed15m: metrics.completed15m, matchedPairs: metrics.matchedPairs,
+        completed15m: metrics.completed15m, matchedPairs: metrics.matchedPairs, comparablePairs: metrics.comparablePairs,
         weightedMedianUplift: metrics.weightedMedianUplift, weightedHitRateUplift: metrics.weightedHitRateUplift,
         bootstrapLower: metrics.bootstrapLower, worstP10Regression: metrics.worstP10Regression
       } });
