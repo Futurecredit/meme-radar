@@ -78,6 +78,41 @@ test('chase risk is retained and a near WAIT_RECHECK control is matched once', (
   assert.equal(matchControl(signal, controls), null);
 });
 
+test('controls that later become signals are excluded and samples are versioned per strategy', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-contamination-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    const control = lab.recordCandidate(candidate({ status: 'WAIT_RECHECK' }), { now: 1 });
+    const nearby = lab.recordCandidate(candidate({ address: '22222222222222222222222222222222' }), { now: 2 });
+    assert.equal(nearby.matchedTradeId, control.id);
+
+    lab.recordCandidate(candidate({ status: 'X_REVIEW' }), { now: 3 });
+    assert.equal(control.contaminatedAt, 3);
+    assert.equal(control.matchedTradeId, undefined);
+    assert.equal(nearby.matchedTradeId, undefined);
+
+    const firstVersionCount = lab.state.trades.filter(row => row.cohort === 'signal').length;
+    lab.manualBaseline({ ...policy, discovery: { ...policy.discovery, minMarketCap: 11_000 } }, 4);
+    lab.recordCandidate(candidate({ address: '22222222222222222222222222222222' }), { now: 5 });
+    assert.equal(lab.state.trades.filter(row => row.cohort === 'signal').length, firstVersionCount + 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('factor quality query applies the requested horizon', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-horizon-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    const trade = lab.recordCandidate(candidate(), { now: 1 });
+    trade.samples.m5 = { conservativeReturn: .2 };
+    trade.samples.m10 = { conservativeReturn: -.1 };
+    const five = lab.query({ view: 'factors', horizon: 'm5' }).rows;
+    const ten = lab.query({ view: 'factors', horizon: 'm10' }).rows;
+    assert.ok(five.length > 0);
+    assert.ok(five.every(row => row.horizon === 'm5' && row.medianNetReturn === .2));
+    assert.ok(ten.every(row => row.horizon === 'm10' && row.medianNetReturn === -.1));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('promotion requires future sample gates, uplift, confidence and protected downside', () => {
   const eligible = evaluatePromotion({
     completed15m: 80, matchedPairs: 40, spanMs: 24 * 60 * 60_000,

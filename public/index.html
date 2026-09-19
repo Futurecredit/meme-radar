@@ -445,6 +445,12 @@
     .live-table { min-width: 1260px; }
     .outcome-table { min-width: 760px; }
     .coverage-table { min-width: 760px; }
+    .factor-period-table { min-width: 920px; }
+    .factor-detail-table { min-width: 860px; }
+    .factor-lab-details { margin-top: 10px; border-top: 1px solid var(--line-soft); }
+    .factor-lab-details summary { cursor: pointer; padding: 10px 2px; color: var(--cyan); font-weight: 700; }
+    .factor-lab-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 8px 0 10px; color: var(--muted); }
+    .factor-lab-meta strong { color: var(--text); font-family: ui-monospace, monospace; }
     .live-table th:first-child, .live-table td:first-child { min-width: 185px; }
     .outcome-table th:first-child, .outcome-table td:first-child,
     .coverage-table th:first-child, .coverage-table td:first-child { min-width: 120px; }
@@ -808,6 +814,35 @@
         <div id="outcomeCoverage" class="manage-body muted"></div>
       </article>
 
+      <article id="factorLabPanel" class="panel wide">
+        <div class="head"><div><h2 data-i18n="factorLabTitle">固定周期因子实验室</h2><span data-i18n="factorLabSubtitle">100 USDC影子盘 · 往返固定成本3% + 动态滑点 · 不会真实下单</span></div></div>
+        <div class="factor-lab-meta">
+          <span><span data-i18n="labCurrent">主策略</span> <strong id="factorLabChampion">--</strong></span>
+          <span><span data-i18n="labCandidate">候选</span> <strong id="factorLabChallenger">--</strong></span>
+          <span><span data-i18n="labProgress">样本/匹配</span> <strong id="factorLabProgress">0 / 0</strong></span>
+          <span><span data-i18n="labDecision">自动状态</span> <strong id="factorLabAuto">--</strong></span>
+        </div>
+        <div class="manage-actions">
+          <button id="factorLabPause" class="mini-button" type="button" data-i18n="pauseAuto">暂停自动晋级</button>
+          <button id="factorLabRollback" class="mini-button ignore" type="button" data-i18n="rollbackStrategy">回滚上一策略</button>
+        </div>
+        <div class="table compact-table-wrap">
+          <table class="compact-table factor-period-table">
+            <thead><tr><th data-i18n="periodColumn">周期</th><th data-i18n="completedColumn">已完成</th><th data-i18n="coverageColumn">覆盖率</th><th data-i18n="observedMedianColumn">可观测中位数</th><th data-i18n="conservativeMedianColumn">保守中位数</th><th data-i18n="hitRateColumn">盈利率</th><th data-i18n="p10Column">P10</th><th data-i18n="missingColumn">缺失</th></tr></thead>
+            <tbody id="factorLabPeriods"><tr><td colspan="8" class="muted">等待影子样本</td></tr></tbody>
+          </table>
+        </div>
+        <details id="factorLabDetails" class="factor-lab-details">
+          <summary data-i18n="factorDetails">因子质量、影子流水与策略历史</summary>
+          <h3 data-i18n="factorRanking">因子质量榜</h3>
+          <div id="factorLabFactors" class="table compact-table-wrap"></div>
+          <h3 data-i18n="shadowLedger">影子交易流水</h3>
+          <div id="factorLabTrades" class="table compact-table-wrap"></div>
+          <h3 data-i18n="strategyHistory">策略历史</h3>
+          <div id="factorLabHistory" class="table compact-table-wrap"></div>
+        </details>
+      </article>
+
       <article class="panel wide">
         <div class="head">
           <h2 data-i18n="auditTitle">近30分钟深度审计</h2>
@@ -1043,6 +1078,28 @@
       last30mLocal: ['近30分钟/本机', '近30分鐘/本機', '30 min / local', '30分/ローカル', '30분/로컬', '30 دقيقة / محلي'],
       localOnlyNoTrade: ['仅本浏览器标记，不会下单', '僅本瀏覽器標記，不會下單', 'Browser-only mark; no order', 'このブラウザのみ・注文なし', '현재 브라우저에만 저장·주문 없음', 'علامة في هذا المتصفح فقط؛ لا أوامر'],
       outcomeTitle: ['筛选后表现验证', '篩選後表現驗證', 'Post-screen performance', '選別後パフォーマンス', '필터링 후 성과 검증', 'أداء ما بعد الفرز'],
+      factorLabTitle: ['固定周期因子实验室','固定週期因子實驗室','Fixed-horizon factor lab','固定期間ファクターラボ','고정 기간 팩터 실험실','مختبر عوامل الفترات الثابتة'],
+      factorLabSubtitle: ['100 USDC影子盘 · 往返固定成本3% + 动态滑点 · 不会真实下单','100 USDC影子盤 · 往返固定成本3% + 動態滑點 · 不會真實下單','100 USDC shadow book · 3% round-trip base cost + dynamic slippage · no real orders','100 USDCシャドー運用・往復固定費3%＋動的スリッページ・実取引なし','100 USDC 섀도우 장부 · 왕복 고정비 3% + 동적 슬리피지 · 실제 주문 없음','محاكاة 100 USDC · تكلفة ثابتة 3٪ وانزلاق ديناميكي · بلا أوامر حقيقية'],
+      labCurrent: ['主策略','主策略','Champion','現行戦略','주 전략','الاستراتيجية الرئيسية'],
+      labCandidate: ['候选','候選','Challenger','候補','후보','المرشح'],
+      labProgress: ['样本/匹配','樣本/配對','Samples / matched','サンプル／対応','표본 / 매칭','العينات / المطابقة'],
+      labDecision: ['自动状态','自動狀態','Automation','自動状態','자동 상태','حالة الأتمتة'],
+      pauseAuto: ['暂停自动晋级','暫停自動晉級','Pause auto-promotion','自動昇格を停止','자동 승격 일시중지','إيقاف الترقية التلقائية'],
+      resumeAuto: ['恢复自动晋级','恢復自動晉級','Resume auto-promotion','自動昇格を再開','자동 승격 재개','استئناف الترقية التلقائية'],
+      rollbackStrategy: ['回滚上一策略','回滾上一策略','Roll back strategy','前の戦略へ戻す','이전 전략으로 롤백','الرجوع للاستراتيجية السابقة'],
+      periodColumn: ['周期','週期','Horizon','期間','기간','الفترة'],
+      coverageColumn: ['覆盖率','覆蓋率','Coverage','取得率','커버리지','التغطية'],
+      observedMedianColumn: ['可观测中位数','可觀測中位數','Observed median','観測中央値','관측 중앙값','وسيط المرصود'],
+      conservativeMedianColumn: ['保守中位数','保守中位數','Conservative median','保守中央値','보수적 중앙값','الوسيط المحافظ'],
+      hitRateColumn: ['盈利率','盈利率','Hit rate','勝率','수익 비율','معدل الربح'],
+      p10Column: ['P10尾部','P10尾部','P10 tail','P10下方','P10 꼬리','ذيل P10'],
+      factorDetails: ['因子质量、影子流水与策略历史','因子品質、影子流水與策略歷史','Factor quality, shadow ledger and strategy history','因子品質・シャドー記録・戦略履歴','팩터 품질, 섀도우 내역 및 전략 기록','جودة العوامل وسجل المحاكاة وتاريخ الاستراتيجية'],
+      factorRanking: ['因子质量榜','因子品質榜','Factor quality','因子品質','팩터 품질','جودة العوامل'],
+      shadowLedger: ['影子交易流水','影子交易流水','Shadow ledger','シャドー取引記録','섀도우 거래 내역','سجل المحاكاة'],
+      strategyHistory: ['策略历史','策略歷史','Strategy history','戦略履歴','전략 기록','تاريخ الاستراتيجية'],
+      labAutoOn: ['自动晋级开启','自動晉級開啟','Auto-promotion on','自動昇格オン','자동 승격 켜짐','الترقية التلقائية مفعلة'],
+      labAutoOff: ['自动晋级已暂停','自動晉級已暫停','Auto-promotion paused','自動昇格停止中','자동 승격 일시중지','الترقية التلقائية متوقفة'],
+      labCollecting: ['采集中','採集中','Collecting','収集中','수집 중','جارٍ التجميع'],
       shadowDisclaimer: ['影子观察，不代表可成交收益，也不作为交易指令', '影子觀察，不代表可成交收益，也不作為交易指令', 'Shadow tracking only; not executable return or a trade instruction', '影子追跡のみ。約定可能な収益や取引指示ではありません', '영자 관찰용이며 실제 수익·거래 지시가 아닙니다', 'تتبع ظلي فقط؛ لا يمثل عائدًا قابلًا للتنفيذ أو أمر تداول'],
       trackedSamples: ['跟踪样本', '追蹤樣本', 'Tracked samples', '追跡サンプル', '추적 표본', 'العينات المتتبعة'],
       historicalObservations: ['历史候选观察数', '歷史候選觀察數', 'Historical candidate observations', '過去の候補観測数', '역사적 후보 관찰 수', 'عدد مراقبات المرشحين'],
@@ -1425,6 +1482,8 @@
     let toastTimer = null;
     let chainSwitching = false;
     let rowsFingerprint = '';
+    let factorLabDetailsLoadedAt = 0;
+    let factorLabAutoEnabled = true;
 
     function readStorage(key, fallback) {
       try {
@@ -2170,6 +2229,75 @@
         + '</tr></thead><tbody>' + coverageBody + '</tbody></table></div>';
     }
 
+    function shortVersion(value) {
+      const text = String(value || '');
+      return text ? text.slice(0, 10) : '--';
+    }
+
+    function renderFactorLabSummary(data) {
+      const summary = data.factorLabSummary || {};
+      factorLabAutoEnabled = summary.autoPromotionEnabled !== false;
+      byId('factorLabChampion').textContent = shortVersion(summary.championVersion);
+      byId('factorLabChallenger').textContent = summary.challengerVersion ? shortVersion(summary.challengerVersion) : t('labCollecting');
+      byId('factorLabProgress').textContent = formatCount(number(summary.signalCount)) + ' / ' + formatCount(number(summary.matchedPairs));
+      byId('factorLabAuto').textContent = t(factorLabAutoEnabled ? 'labAutoOn' : 'labAutoOff');
+      byId('factorLabPause').textContent = t(factorLabAutoEnabled ? 'pauseAuto' : 'resumeAuto');
+      byId('factorLabRollback').disabled = summary.rollbackAvailable !== true;
+      const labels = {m5:'5m',m10:'10m',m15:'15m',m30:'30m',h1:'1h',h2:'2h',h24:'24h'};
+      byId('factorLabPeriods').innerHTML = Object.keys(labels).map(function (key) {
+        const row = summary.horizons && summary.horizons[key] || {};
+        return '<tr><td class="mono">' + labels[key] + '</td>'
+          + '<td class="mono">' + escapeHtml(formatCount(number(row.completed))) + '</td>'
+          + '<td class="mono">' + escapeHtml(formatSignedPercent(row.coverage)) + '</td>'
+          + '<td class="mono">' + escapeHtml(formatSignedPercent(row.observedMedian)) + '</td>'
+          + '<td class="mono">' + escapeHtml(formatSignedPercent(row.conservativeMedian)) + '</td>'
+          + '<td class="mono">' + escapeHtml(formatSignedPercent(row.hitRate)) + '</td>'
+          + '<td class="mono">' + escapeHtml(formatSignedPercent(row.p10)) + '</td>'
+          + '<td class="mono">' + escapeHtml(formatCount(number(row.missing))) + '</td></tr>';
+      }).join('');
+    }
+
+    function factorLabTable(headers, rows, cells) {
+      return '<table class="compact-table factor-detail-table"><thead><tr>'
+        + headers.map(function (header) { return '<th>' + escapeHtml(header) + '</th>'; }).join('')
+        + '</tr></thead><tbody>' + (rows.length ? rows.map(function (row) {
+          return '<tr>' + cells(row).map(function (cell) { return '<td>' + cell + '</td>'; }).join('') + '</tr>';
+        }).join('') : '<tr><td colspan="' + headers.length + '" class="muted">' + escapeHtml(t('labCollecting')) + '</td></tr>')
+        + '</tbody></table>';
+    }
+
+    async function loadFactorLabViews(force) {
+      if (!byId('factorLabDetails').open) return;
+      if (!force && Date.now() - factorLabDetailsLoadedAt < 30000) return;
+      factorLabDetailsLoadedAt = Date.now();
+      const chain = viewChain || activeChain(lastData);
+      try {
+        const responses = await Promise.all([
+          fetch('/api/factor-lab?view=factors&limit=100', { signal: AbortSignal.timeout(10000) }),
+          fetch('/api/factor-lab?view=trades&limit=50&chain=' + encodeURIComponent(chain), { signal: AbortSignal.timeout(10000) }),
+          fetch('/api/factor-lab?view=history&limit=50', { signal: AbortSignal.timeout(10000) })
+        ]);
+        if (responses.some(function (response) { return !response.ok; })) throw new Error('factor_lab_failed');
+        const results = await Promise.all(responses.map(function (response) { return response.json(); }));
+        const factors = results[0].rows || [], trades = results[1].rows || [], history = results[2].rows || [];
+        byId('factorLabFactors').innerHTML = factorLabTable(
+          ['因子','区间','样本','净收益中位数','盈利率','P10','匹配收益差','追高率'], factors,
+          function (row) { return [escapeHtml(row.factor), escapeHtml(row.bucket), escapeHtml(formatCount(row.sampleCount)), escapeHtml(formatSignedPercent(row.medianNetReturn)), escapeHtml(formatSignedPercent(row.hitRate)), escapeHtml(formatSignedPercent(row.p10)), escapeHtml(formatSignedPercent(row.matchedUplift)), escapeHtml(formatSignedPercent(row.chaseRate))]; }
+        );
+        byId('factorLabTrades').innerHTML = factorLabTable(
+          ['时间','代币','链','分组','入场价','10m净收益','动态成本','策略'], trades,
+          function (row) { const sample = row.samples && row.samples.m10 || {}; return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.cohort), escapeHtml(row.entry && row.entry.price !== null ? String(row.entry.price) : '--'), escapeHtml(formatSignedPercent(sample.netReturn)), escapeHtml(formatSignedPercent(sample.dynamicCostRate)), escapeHtml(shortVersion(row.strategyVersion))]; }
+        );
+        byId('factorLabHistory').innerHTML = factorLabTable(
+          ['时间','事件','策略','变更','原因'], history,
+          function (row) { return [escapeHtml(formatClock(row.at)), escapeHtml(row.type), escapeHtml(shortVersion(row.strategyVersion)), escapeHtml((row.changedPaths || []).join(', ') || '--'), escapeHtml(row.reason || '--')]; }
+        );
+      } catch {
+        factorLabDetailsLoadedAt = 0;
+        ['factorLabFactors','factorLabTrades','factorLabHistory'].forEach(function (id) { byId(id).innerHTML = '<div class="empty">' + escapeHtml(t('settingsFailed')) + '</div>'; });
+      }
+    }
+
     function liveTableRow(row, options) {
       const address = String(row.address || '');
       const changeTone = row.priceDelta > 0 ? 'good' : row.priceDelta < 0 ? 'bad' : '';
@@ -2283,6 +2411,7 @@
       renderNotice(data);
       renderEvents(data);
       renderOutcomes(data);
+      renderFactorLabSummary(data);
       renderChainSwitcher(data);
       renderGmgnConnection(data);
       renderManagement(data);
@@ -2591,6 +2720,26 @@
       input.removeAttribute('aria-invalid');
       const error = byId('policyFields').querySelector('[data-policy-error="' + input.dataset.policyPath + '"]');
       if (error) error.textContent = '';
+    });
+    byId('factorLabDetails').addEventListener('toggle', function () { if (this.open) loadFactorLabViews(true); });
+    byId('factorLabPause').addEventListener('click', async function () {
+      try {
+        const result = await postLocal('/api/factor-lab-control', { autoPromotionEnabled: !factorLabAutoEnabled });
+        if (lastData) lastData.factorLabSummary = result.summary;
+        renderFactorLabSummary(lastData || { factorLabSummary: result.summary });
+        showToast(t('settingsSaved'));
+      } catch { showToast(t('settingsFailed')); }
+    });
+    byId('factorLabRollback').addEventListener('click', async function () {
+      if (!window.confirm(t('rollbackStrategy'))) return;
+      try {
+        const result = await postLocal('/api/factor-lab-rollback', {});
+        if (lastData) lastData.factorLabSummary = result.summary;
+        factorLabDetailsLoadedAt = 0;
+        renderFactorLabSummary(lastData || { factorLabSummary: result.summary });
+        loadFactorLabViews(true);
+        showToast(t('settingsSaved'));
+      } catch { showToast(t('settingsFailed')); }
     });
     byId('savePolicy').addEventListener('click', async function () {
       try {

@@ -380,6 +380,7 @@ function publicFactorLabSummary(source = {}) {
   return {
     enabled: source.enabled === true,
     autoPromotionEnabled: source.autoPromotionEnabled === true,
+    rollbackAvailable: source.rollbackAvailable === true,
     championVersion: text(source.championVersion, 64),
     challengerVersion: text(source.challenger?.version, 64),
     challengerChangedPaths: Array.isArray(source.challenger?.changedPaths) ? source.challenger.changedPaths.slice(0, 4).map(value => text(value, 80)) : [],

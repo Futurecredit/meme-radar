@@ -296,7 +296,7 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
 }
 
 function matchDistance(signal, control) {
-  if (signal.chain !== control.chain || control.matchedTradeId) return Infinity;
+  if (signal.chain !== control.chain || control.matchedTradeId || control.contaminatedAt) return Infinity;
   const age = Math.abs(signal.signalAt - control.signalAt);
   if (age > 10 * 60_000) return Infinity;
   const ratios = ['marketCap', 'liquidity', 'ageSec'].map(key => {
@@ -465,19 +465,21 @@ function publicTrade(trade) {
   };
 }
 
-function factorQualityRows(trades) {
-  const completed = trades.filter(trade => trade.cohort === 'signal' && MAIN_HORIZONS.some(key => Number.isFinite(trade.samples?.[key]?.conservativeReturn)));
+function factorQualityRows(trades, horizon = 'm10') {
+  const selectedHorizon = Object.hasOwn(SHADOW_HORIZONS, horizon) ? horizon : 'm10';
+  const completed = trades.filter(trade => trade.cohort === 'signal' && Number.isFinite(trade.samples?.[selectedHorizon]?.conservativeReturn));
   const rows = [];
   const addRow = (factor, bucket, members) => {
-    const returns = members.flatMap(trade => MAIN_HORIZONS.map(key => trade.samples?.[key]?.conservativeReturn)).filter(Number.isFinite);
+    const returns = members.map(trade => trade.samples?.[selectedHorizon]?.conservativeReturn).filter(Number.isFinite);
     const matched = members.map(trade => {
       const control = trades.find(row => row.id === trade.matchedTradeId);
       if (!control) return null;
-      const signalValue = MAIN_HORIZONS.reduce((sum, key) => sum + WEIGHTS[key] * Number(trade.samples?.[key]?.conservativeReturn ?? 0), 0);
-      const controlValue = MAIN_HORIZONS.reduce((sum, key) => sum + WEIGHTS[key] * Number(control.samples?.[key]?.conservativeReturn ?? 0), 0);
+      const signalValue = trade.samples?.[selectedHorizon]?.conservativeReturn;
+      const controlValue = control.samples?.[selectedHorizon]?.conservativeReturn;
+      if (!Number.isFinite(signalValue) || !Number.isFinite(controlValue)) return null;
       return signalValue - controlValue;
     }).filter(Number.isFinite);
-    rows.push({ factor, bucket, sampleCount: members.length, completed: returns.length,
+    rows.push({ factor, bucket, horizon: selectedHorizon, sampleCount: members.length, completed: returns.length,
       medianNetReturn: median(returns), hitRate: returns.length ? returns.filter(value => value > 0).length / returns.length : null,
       p10: percentile(returns, .10), matchedUplift: median(matched),
       chaseRate: members.length ? members.filter(row => row.chaseRisk).length / members.length : 0 });
@@ -611,7 +613,17 @@ export class FactorLab {
     const cohort = cohortFor(candidate);
     if (!cohort || (cohort === 'hard_reject' && !shouldSampleHardReject(candidate))) return null;
     const key = tokenKey(candidate.chain, candidate.address);
-    const duplicate = this.state.trades.find(trade => tokenKey(trade.chain, trade.address) === key && trade.cohort === cohort);
+    const currentVersion = this.state.champion.version;
+    if (cohort === 'signal') {
+      for (const control of this.state.trades.filter(row => row.cohort === 'control' && tokenKey(row.chain, row.address) === key && !row.contaminatedAt)) {
+        control.contaminatedAt = now;
+        const paired = this.state.trades.find(row => row.id === control.matchedTradeId);
+        if (paired) delete paired.matchedTradeId;
+        delete control.matchedTradeId;
+      }
+    }
+    const duplicate = this.state.trades.find(trade => tokenKey(trade.chain, trade.address) === key
+      && trade.cohort === cohort && trade.strategyVersion === currentVersion);
     if (duplicate) {
       duplicate.latestDecision = candidate.status;
       duplicate.lastAuditedAt = now;
@@ -718,6 +730,7 @@ export class FactorLab {
     return {
       enabled: true,
       autoPromotionEnabled: this.state.autoPromotionEnabled === true,
+      rollbackAvailable: Boolean(this.state.previousChampion),
       championVersion: this.state.champion?.version || '',
       challenger: this.state.challenger ? clone(this.state.challenger) : null,
       tracked: this.state.trades.length,
@@ -739,7 +752,12 @@ export class FactorLab {
     const cursor = Math.max(0, Number.parseInt(parameters.cursor || '0', 10) || 0);
     if (view === 'summary') return { view, summary: this.summary() };
     let rows;
-    if (view === 'factors') rows = factorQualityRows(this.state.trades);
+    if (view === 'factors') {
+      const filtered = this.state.trades
+        .filter(row => !parameters.chain || row.chain === parameters.chain)
+        .filter(row => !parameters.strategyVersion || row.strategyVersion === parameters.strategyVersion);
+      rows = factorQualityRows(filtered, parameters.horizon);
+    }
     else if (view === 'history') rows = [...this.state.history].reverse().map(row => ({
       at: finite(row.at), type: String(row.type || '').slice(0, 48),
       strategyVersion: String(row.strategyVersion || '').slice(0, 64),

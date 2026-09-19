@@ -251,3 +251,20 @@ test('折叠设置区提供策略载入、行内错误、保存与重置且不�
   assert.match(html, /policyFormDirty = true/);
   assert.doesNotMatch(html, /data-policy-path="[^\"]*(?:Tax|LpLocked|Top10|Insider|Bot|Linked)/i);
 });
+
+test('固定周期因子实验室使用紧凑表格并按需加载明细', () => {
+  assert.match(html, /id="factorLabPanel"/);
+  assert.match(html, /<table class="compact-table factor-period-table">/);
+  assert.match(html, /id="factorLabPeriods"/);
+  assert.match(html, /id="factorLabFactors"/);
+  assert.match(html, /id="factorLabTrades"/);
+  assert.match(html, /id="factorLabHistory"/);
+  assert.match(html, /function renderFactorLabSummary\(/);
+  assert.match(html, /function loadFactorLabViews\(/);
+  assert.match(html, /\/api\/factor-lab\?view=factors/);
+  assert.match(html, /\/api\/factor-lab-control/);
+  assert.match(html, /\/api\/factor-lab-rollback/);
+  const start = html.indexOf('id="factorLabPanel"');
+  const end = html.indexOf('<article class="panel wide">', start + 30);
+  assert.doesNotMatch(html.slice(start, end), /class="card/);
+});
