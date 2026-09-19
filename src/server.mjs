@@ -367,6 +367,29 @@ function publicOutcomeSummary(source = {}) {
   };
 }
 
+function publicFactorLabSummary(source = {}) {
+  const horizons = {};
+  for (const key of ['m5', 'm10', 'm15', 'm30', 'h1', 'h2', 'h24']) {
+    const row = source.horizons?.[key] || {};
+    horizons[key] = {
+      eligible: finite(row.eligible), completed: finite(row.completed), missing: finite(row.missing),
+      coverage: finiteOrNull(row.coverage), observedMedian: finiteOrNull(row.observedMedian),
+      conservativeMedian: finiteOrNull(row.conservativeMedian), hitRate: finiteOrNull(row.hitRate), p10: finiteOrNull(row.p10)
+    };
+  }
+  return {
+    enabled: source.enabled === true,
+    autoPromotionEnabled: source.autoPromotionEnabled === true,
+    championVersion: text(source.championVersion, 64),
+    challengerVersion: text(source.challenger?.version, 64),
+    challengerChangedPaths: Array.isArray(source.challenger?.changedPaths) ? source.challenger.changedPaths.slice(0, 4).map(value => text(value, 80)) : [],
+    tracked: finite(source.tracked), signalCount: finite(source.signalCount), controlCount: finite(source.controlCount),
+    hardRejectCount: finite(source.hardRejectCount), matchedPairs: finite(source.matchedPairs),
+    lastPromotionAt: finite(source.lastPromotionAt), recoveredFromBackup: source.recoveredFromBackup === true,
+    disabledReason: publicCode(source.disabledReason), horizons
+  };
+}
+
 export function toPublicStatus(source = {}) {
   const status = text(source.status, 32) || 'STARTING';
   const requestedActiveChain = text(source.activeChain || source.policy?.chain, 32).toLowerCase();
@@ -571,7 +594,7 @@ function allowedChainIds(supportedChains) {
   return new Set(configured.length ? configured : CHAIN_IDS);
 }
 
-export function createServer({ state, settings, controls, switchChain, saveGmgnKey, disconnectGmgnKey, getGmgnOnboarding, getGmgnConnection, liveDiscovery, enqueueReview, requestPolicyScan, supportedChains = [] }) {
+export function createServer({ state, settings, controls, factorLab, switchChain, saveGmgnKey, disconnectGmgnKey, getGmgnOnboarding, getGmgnConnection, liveDiscovery, enqueueReview, requestPolicyScan, supportedChains = [] }) {
   const dashboard = path.join(settings.publicDir, 'index.html');
   const dashboardHtml = fs.readFileSync(dashboard, 'utf8');
   const csp = contentSecurityPolicy(dashboardHtml);
@@ -630,12 +653,33 @@ export function createServer({ state, settings, controls, switchChain, saveGmgnK
           if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'policy')) return sendJson(res, 400, { error: 'invalid_policy', fields: { request: 'invalid_shape' } }, csp);
           result = controls.setPolicy(body.policy);
         }
+        factorLab?.manualBaseline?.(result.policy);
         requestPolicyScan?.();
         return sendJson(res, 200, result, csp);
       } catch (error) {
         if (error?.code === 'INVALID_POLICY') return sendJson(res, 400, { error: 'invalid_policy', fields: error.fields }, csp);
         const status = [400, 413, 415].includes(error?.statusCode) ? error.statusCode : 500;
         return sendJson(res, status, { error: status === 413 ? 'request_too_large' : 'policy_not_saved' }, csp);
+      }
+    }
+
+    if (req.method === 'POST' && ['/api/factor-lab-control', '/api/factor-lab-rollback'].includes(url.pathname)) {
+      if (!req.headers.origin) return sendJson(res, 403, { error: 'local_request_required' }, csp);
+      if (!factorLab) return sendJson(res, 503, { error: 'factor_lab_unavailable' }, csp);
+      try {
+        const body = await readSmallJson(req, 512);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return sendJson(res, 400, { error: 'invalid_factor_lab_request' }, csp);
+        if (url.pathname === '/api/factor-lab-control') {
+          if (Object.keys(body).sort().join(',') !== 'autoPromotionEnabled' || typeof body.autoPromotionEnabled !== 'boolean') {
+            return sendJson(res, 400, { error: 'invalid_factor_lab_request' }, csp);
+          }
+          return sendJson(res, 200, { saved: true, summary: publicFactorLabSummary(factorLab.setAutoPromotion(body.autoPromotionEnabled)) }, csp);
+        }
+        if (Object.keys(body).length) return sendJson(res, 400, { error: 'invalid_factor_lab_request' }, csp);
+        return sendJson(res, 200, { rolledBack: true, summary: publicFactorLabSummary(factorLab.rollback()) }, csp);
+      } catch (error) {
+        const status = [400, 409, 413, 415].includes(error?.statusCode) ? error.statusCode : 500;
+        return sendJson(res, status, { error: status === 409 ? 'rollback_unavailable' : status === 413 ? 'request_too_large' : 'factor_lab_request_failed' }, csp);
       }
     }
 
@@ -750,6 +794,16 @@ export function createServer({ state, settings, controls, switchChain, saveGmgnK
     }
 
     if (req.method !== 'GET') return sendJson(res, 405, { error: 'read_only_scanner' }, csp);
+    if (url.pathname === '/api/factor-lab') {
+      if (!factorLab) return sendJson(res, 503, { error: 'factor_lab_unavailable' }, csp);
+      try {
+        const chain = url.searchParams.get('chain') || '';
+        if (chain && !allowedChainIds(supportedChains).has(chain)) return sendJson(res, 400, { error: 'unsupported_chain' }, csp);
+        return sendJson(res, 200, factorLab.query(Object.fromEntries(url.searchParams.entries())), csp);
+      } catch (error) {
+        return sendJson(res, error?.statusCode === 400 ? 400 : 500, { error: error?.statusCode === 400 ? 'invalid_factor_lab_query' : 'factor_lab_unavailable' }, csp);
+      }
+    }
     if (url.pathname === '/api/status' || url.pathname === '/api/export') {
       const snapshot = getGmgnConnection?.();
       const gmgnConnection = {
@@ -768,6 +822,7 @@ export function createServer({ state, settings, controls, switchChain, saveGmgnK
         note: publicMessage(value.note, '[redacted]', 500), updatedAt: finite(value.updatedAt)
       }]));
       const output = { ...toPublicStatus(selected), gmgnConnection, annotations,
+        factorLabSummary: publicFactorLabSummary(factorLab?.summary?.() || selected.factorLabSummary),
         policy: controls?.policy?.(),
         scheduler: { scanningChain: text(state.value.activeChain, 32), enabledChains: controls?.value.enabledChains || [state.value.activeChain],
           lastSuccessAt: finite(state.value.lastSuccessAt), status: text(state.value.status, 32) },
@@ -791,6 +846,7 @@ export function createServer({ state, settings, controls, switchChain, saveGmgnK
             } : null]))
           }))
         }]));
+        output.factorLab = factorLab?.exportPublic?.() || null;
         res.setHeader('Content-Disposition', 'attachment; filename="meme-radar-records.json"');
       }
       return sendJson(res, 200, output, csp);

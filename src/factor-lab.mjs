@@ -432,6 +432,77 @@ function comparisonMetrics(trades, champion, challenger, since, experimentId, no
   };
 }
 
+function publicSample(sample) {
+  if (!sample || typeof sample !== 'object') return null;
+  return {
+    targetAt: finite(sample.targetAt), at: finite(sample.at), price: finite(sample.price),
+    observedReturn: finite(sample.observedReturn), conservativeReturn: finite(sample.conservativeReturn),
+    netReturn: finite(sample.netReturn), grossReturn: finite(sample.grossReturn),
+    fixedCostRate: finite(sample.fixedCostRate), dynamicCostRate: finite(sample.dynamicCostRate),
+    missingKind: String(sample.missingKind || '').slice(0, 40),
+    liquidityEstimated: sample.liquidityEstimated === true,
+    source: String(sample.source || '').slice(0, 40)
+  };
+}
+
+function publicTrade(trade) {
+  const factors = trade.factors || {};
+  return {
+    id: String(trade.id || '').slice(0, 64), chain: String(trade.chain || '').slice(0, 32),
+    address: String(trade.address || '').slice(0, 128), symbol: String(trade.symbol || '?').slice(0, 30),
+    cohort: String(trade.cohort || '').slice(0, 24), exploration: trade.exploration === true,
+    signalAt: finite(trade.signalAt), strategyVersion: String(trade.strategyVersion || '').slice(0, 64),
+    initialDecision: String(trade.initialDecision || '').slice(0, 32), latestDecision: String(trade.latestDecision || '').slice(0, 32),
+    chaseRisk: trade.chaseRisk === true, matchedTradeId: String(trade.matchedTradeId || '').slice(0, 64),
+    factors: {
+      marketCap: finite(factors.marketCap), liquidity: finite(factors.liquidity), ageSec: finite(factors.ageSec),
+      discoveryScore: finite(factors.discoveryScore), holders: finite(factors.holders), volume1h: finite(factors.volume1h),
+      priorityBand: factors.priorityBand === true, smartWallets: finite(factors.smartWallets), kolOnly: factors.kolOnly === true
+    },
+    entry: trade.entry?.price ? { targetAt: finite(trade.entry.targetAt), at: finite(trade.entry.at), price: finite(trade.entry.price),
+      liquidity: finite(trade.entry.liquidity), source: String(trade.entry.source || '').slice(0, 40) } : { targetAt: finite(trade.entry?.targetAt) },
+    samples: Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => [key, publicSample(trade.samples?.[key])]))
+  };
+}
+
+function factorQualityRows(trades) {
+  const completed = trades.filter(trade => trade.cohort === 'signal' && MAIN_HORIZONS.some(key => Number.isFinite(trade.samples?.[key]?.conservativeReturn)));
+  const rows = [];
+  const addRow = (factor, bucket, members) => {
+    const returns = members.flatMap(trade => MAIN_HORIZONS.map(key => trade.samples?.[key]?.conservativeReturn)).filter(Number.isFinite);
+    const matched = members.map(trade => {
+      const control = trades.find(row => row.id === trade.matchedTradeId);
+      if (!control) return null;
+      const signalValue = MAIN_HORIZONS.reduce((sum, key) => sum + WEIGHTS[key] * Number(trade.samples?.[key]?.conservativeReturn ?? 0), 0);
+      const controlValue = MAIN_HORIZONS.reduce((sum, key) => sum + WEIGHTS[key] * Number(control.samples?.[key]?.conservativeReturn ?? 0), 0);
+      return signalValue - controlValue;
+    }).filter(Number.isFinite);
+    rows.push({ factor, bucket, sampleCount: members.length, completed: returns.length,
+      medianNetReturn: median(returns), hitRate: returns.length ? returns.filter(value => value > 0).length / returns.length : null,
+      p10: percentile(returns, .10), matchedUplift: median(matched),
+      chaseRate: members.length ? members.filter(row => row.chaseRisk).length / members.length : 0 });
+  };
+  for (const factor of ['marketCap', 'liquidity', 'ageSec', 'discoveryScore', 'holders', 'volume1h', 'smartWallets']) {
+    const values = completed.map(row => finite(row.factors?.[factor])).filter(Number.isFinite).sort((a, b) => a - b);
+    if (!values.length) continue;
+    const cuts = [percentile(values, .25), percentile(values, .50), percentile(values, .75)];
+    for (let index = 0; index < 4; index++) {
+      const members = completed.filter(row => {
+        const value = finite(row.factors?.[factor]);
+        if (!Number.isFinite(value)) return false;
+        return index === 0 ? value <= cuts[0]
+          : index === 1 ? value > cuts[0] && value <= cuts[1]
+            : index === 2 ? value > cuts[1] && value <= cuts[2] : value > cuts[2];
+      });
+      addRow(factor, `Q${index + 1}`, members);
+    }
+  }
+  for (const factor of ['priorityBand', 'kolOnly']) {
+    for (const value of [true, false]) addRow(factor, String(value), completed.filter(row => row.factors?.[factor] === value));
+  }
+  return rows.filter(row => row.sampleCount > 0);
+}
+
 export class FactorLab {
   constructor(dir, { policy, now = Date.now } = {}) {
     this.file = path.join(dir, 'factor-lab.json');
@@ -658,6 +729,51 @@ export class FactorLab {
       lastPromotionAt: Number(this.state.lastPromotionAt || 0),
       recoveredFromBackup: this.state.recoveredFromBackup === true,
       disabledReason: String(this.state.disabledReason || '')
+    };
+  }
+
+  query(parameters = {}) {
+    const view = String(parameters.view || 'summary');
+    if (!['summary', 'factors', 'trades', 'history'].includes(view)) throw Object.assign(new Error('invalid_factor_lab_view'), { statusCode: 400 });
+    const limit = clamp(Number.parseInt(parameters.limit || '50', 10) || 50, 1, 100);
+    const cursor = Math.max(0, Number.parseInt(parameters.cursor || '0', 10) || 0);
+    if (view === 'summary') return { view, summary: this.summary() };
+    let rows;
+    if (view === 'factors') rows = factorQualityRows(this.state.trades);
+    else if (view === 'history') rows = [...this.state.history].reverse().map(row => ({
+      at: finite(row.at), type: String(row.type || '').slice(0, 48),
+      strategyVersion: String(row.strategyVersion || '').slice(0, 64),
+      previousVersion: String(row.previousVersion || '').slice(0, 64),
+      baselineVersion: String(row.baselineVersion || '').slice(0, 64),
+      changedPaths: Array.isArray(row.changedPaths) ? row.changedPaths.slice(0, 4).map(value => String(value).slice(0, 80)) : [],
+      reason: String(row.reason || '').slice(0, 80)
+    }));
+    else {
+      const horizon = Object.hasOwn(SHADOW_HORIZONS, parameters.horizon) ? parameters.horizon : 'm10';
+      rows = [...this.state.trades].reverse()
+        .filter(row => !parameters.chain || row.chain === parameters.chain)
+        .filter(row => !parameters.cohort || row.cohort === parameters.cohort)
+        .filter(row => !parameters.strategyVersion || row.strategyVersion === parameters.strategyVersion)
+        .filter(row => {
+          if (!parameters.result) return true;
+          const value = row.samples?.[horizon]?.conservativeReturn;
+          return parameters.result === 'profit' ? Number.isFinite(value) && value > 0
+            : parameters.result === 'loss' ? Number.isFinite(value) && value <= 0
+              : parameters.result === 'missing' ? !Number.isFinite(value) : false;
+        }).map(publicTrade);
+    }
+    const page = rows.slice(cursor, cursor + limit);
+    return { view, rows: page, nextCursor: cursor + page.length < rows.length ? String(cursor + page.length) : null, total: rows.length };
+  }
+
+  exportPublic() {
+    return {
+      version: FACTOR_LAB_VERSION,
+      exportedAt: this.now(),
+      summary: this.summary(),
+      factors: factorQualityRows(this.state.trades),
+      trades: this.state.trades.map(publicTrade),
+      history: this.query({ view: 'history', limit: 100 }).rows
     };
   }
 }
