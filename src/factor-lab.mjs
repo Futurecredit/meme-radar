@@ -2,10 +2,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicJson, readJsonWithBackup, tokenKey } from './local-store.mjs';
+import {
+  ENTRY_FIXED_COST_RATE, EXIT_FIXED_COST_RATE, EXIT_POLICY_VERSION,
+  POSITION_COST_MODEL_VERSION, applyExitCandle, applySafetyExit, applyTimeoutExit, openShadowPosition, positionLiquidityImpact
+} from './shadow-position.mjs';
 
-export const FACTOR_LAB_VERSION = 1;
+export const FACTOR_LAB_VERSION = 2;
 export const FACTOR_SCHEMA_VERSION = 1;
-export const COST_MODEL_VERSION = 1;
+export const COST_MODEL_VERSION = POSITION_COST_MODEL_VERSION;
 export const SHADOW_NOTIONAL_USDC = 100;
 export const FIXED_ROUND_TRIP_COST = 0.03;
 export const SHADOW_HORIZONS = Object.freeze({
@@ -217,7 +221,8 @@ export function shadowReturn({ entryPrice, exitPrice, entryLiquidity, exitLiquid
   if (!(entry > 0) || !(exit > 0)) return -1;
   const entryImpact = liquidityImpact(entryLiquidity);
   const exitImpact = liquidityImpact(exitLiquidity);
-  return clamp((exit / entry) * (1 - entryImpact) * (1 - exitImpact) - 1 - FIXED_ROUND_TRIP_COST, -1, 1000);
+  return clamp((exit / entry) * (1 - ENTRY_FIXED_COST_RATE) * (1 - entryImpact)
+    * (1 - EXIT_FIXED_COST_RATE) * (1 - exitImpact) - 1, -1, 1000);
 }
 
 function factorSnapshot(candidate) {
@@ -256,6 +261,7 @@ export function createShadowTrade(candidate, { cohort, signalAt = Date.now(), po
     strategy: frozenStrategy,
     factorSchemaVersion: FACTOR_SCHEMA_VERSION,
     costModelVersion: COST_MODEL_VERSION,
+    exitPolicyVersion: EXIT_POLICY_VERSION,
     factors: factorSnapshot(candidate),
     entry: { targetAt: entryTargetAt },
     chaseRisk: false,
@@ -285,10 +291,13 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     && Math.abs(Number(sample.at) - Number(job.targetAt)) <= 60_000;
   if (job.kind === 'entry') {
     if (!valid) return false;
-    trade.entry = {
-      targetAt: job.targetAt,
-      at: Number(sample.at),
-      price: Number(sample.price),
+    if (trade.cohort === 'signal') openShadowPosition(trade, {
+      at: Number(sample.at), price: Number(sample.price),
+      liquidity: finite(sample.liquidity) ?? trade.factors.liquidity,
+      source: String(sample.source || 'GMGN_1M_CLOSE')
+    });
+    else trade.entry = {
+      targetAt: job.targetAt, at: Number(sample.at), price: Number(sample.price),
       liquidity: finite(sample.liquidity) ?? trade.factors.liquidity,
       source: String(sample.source || 'GMGN_1M_CLOSE')
     };
@@ -384,6 +393,9 @@ function defaultState(policy, now) {
     champion: { version: strategyFingerprint(strategy), strategy, activatedAt: now },
     previousChampion: null,
     challenger: null,
+    positions: [],
+    referenceSamples: [],
+    reports: [],
     trades: [],
     aggregates: [],
     history: [{ at: now, type: 'BASELINE_CREATED', strategyVersion: strategyFingerprint(strategy), reason: 'initial_policy' }],
@@ -420,6 +432,15 @@ function migrateState(raw, policy, now) {
   if (raw.challenger && !challengerMutation) repaired = true;
   const history = Array.isArray(raw.history) ? raw.history.slice(-1_000) : base.history;
   if (repaired) history.push({ at: now, type: 'STATE_REPAIRED', strategyVersion: champion.version, reason: 'invalid_or_legacy_state' });
+  const legacyRows = raw.version === 1 && Array.isArray(raw.trades)
+    ? raw.trades.filter(row => row && typeof row === 'object').slice(-MAX_TRADES)
+      .map(row => ({ ...row, notionalUsdc: 0, legacyFixedHorizonOnly: true }))
+    : [];
+  const positions = raw.version === FACTOR_LAB_VERSION && Array.isArray(raw.positions)
+    ? raw.positions.filter(row => row && typeof row === 'object').slice(-MAX_TRADES) : [];
+  const referenceSamples = raw.version === FACTOR_LAB_VERSION && Array.isArray(raw.referenceSamples)
+    ? raw.referenceSamples.filter(row => row && typeof row === 'object').slice(-MAX_TRADES)
+    : legacyRows;
   return {
     version: FACTOR_LAB_VERSION,
     autoPromotionEnabled: raw.autoPromotionEnabled !== false,
@@ -430,7 +451,10 @@ function migrateState(raw, policy, now) {
       baselineVersion: champion.version, createdAt: finite(raw.challenger?.createdAt) ?? now,
       changedPaths: challengerMutation.changedPaths, direction: challengerMutation.direction
     } : null,
-    trades: Array.isArray(raw.trades) ? raw.trades.filter(row => row && typeof row === 'object').slice(-MAX_TRADES) : [],
+    positions,
+    referenceSamples,
+    reports: Array.isArray(raw.reports) ? raw.reports.slice(-1_000) : [],
+    trades: [...positions, ...referenceSamples],
     aggregates: Array.isArray(raw.aggregates) ? raw.aggregates.slice(-1_000) : [],
     history,
     lastPromotionAt: finite(raw.lastPromotionAt) ?? 0,
@@ -683,8 +707,17 @@ export class FactorLab {
   }
 
   save() {
-    atomicJson(this.file, this.state);
+    this.syncCollections();
+    const { trades: _compatibilityTrades, ...persisted } = this.state;
+    atomicJson(this.file, persisted);
     return this.state;
+  }
+
+  syncCollections() {
+    const rows = Array.isArray(this.state.trades) ? this.state.trades : [];
+    this.state.positions = rows.filter(row => row?.cohort === 'signal' && row?.legacyFixedHorizonOnly !== true);
+    this.state.referenceSamples = rows.filter(row => row?.cohort !== 'signal' || row?.legacyFixedHorizonOnly === true);
+    this.state.reports = Array.isArray(this.state.reports) ? this.state.reports.slice(-1_000) : [];
   }
 
   effectiveStrategy() {
@@ -788,6 +821,18 @@ export class FactorLab {
   }
 
   recordCandidate(candidate, { now = this.now(), exploration = false } = {}) {
+    if (candidate?.status === 'HARD_REJECT') {
+      const key = tokenKey(candidate.chain, candidate.address);
+      for (const position of this.state.trades.filter(row => row.cohort === 'signal'
+        && tokenKey(row.chain, row.address) === key && ['OPEN', 'RUNNER'].includes(row.status))) {
+        const tradable = finite(candidate.price) > 0 && finite(candidate.liquidity) > 0
+          && candidate.deep?.security?.honeypot !== true;
+        applySafetyExit(position, {
+          at: now, price: candidate.price, liquidity: candidate.liquidity,
+          tradable, code: 'SAFETY_HARD_REJECT'
+        });
+      }
+    }
     const cohort = cohortFor(candidate);
     if (!cohort || (cohort === 'hard_reject' && !shouldSampleHardReject(candidate))) return null;
     const key = tokenKey(candidate.chain, candidate.address);
@@ -836,7 +881,55 @@ export class FactorLab {
   }
 
   async collect(gmgn, { limit = 4, now = this.now, deadline = Infinity } = {}) {
-    for (const job of this.dueJobs(now()).slice(0, limit)) {
+    let reads = 0;
+    const openPositions = this.state.trades.filter(row => row?.cohort === 'signal'
+      && ['OPEN', 'RUNNER'].includes(row.status) && row.entry?.at)
+      .sort((a, b) => Number(a.lastCandleAt || a.entry.at) - Number(b.lastCandleAt || b.entry.at));
+    if (typeof gmgn.candlesBetween === 'function') {
+      for (const position of openPositions) {
+        if (reads >= limit || now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
+        const requestedAt = now();
+        let candles = [];
+        try {
+          candles = await gmgn.candlesBetween(position.address,
+            Number(position.lastCandleAt || position.entry.at), requestedAt, position.chain, requestedAt);
+          reads++;
+        } catch (error) {
+          position.pathRetry = {
+            code: String(error?.code || 'READ_FAILED'),
+            nextAt: requestedAt + 120_000
+          };
+          if (error?.code === 'GMGN_RATE_LIMITED') break;
+          continue;
+        }
+        for (const candle of candles) {
+          const due = dueShadowJobs([position], candle.closeAt)
+            .filter(job => job.kind === 'exit' && Math.abs(job.targetAt - candle.closeAt) <= 60_000);
+          for (const job of due) applyPriceSample(position, job, {
+            at: candle.closeAt, price: candle.close, source: candle.source
+          });
+          const detected = applyExitCandle(position, candle, { exitLiquidity: null });
+          if (detected.pending === 'EXIT_LIQUIDITY' && typeof gmgn.liquiditySnapshot === 'function') {
+            try {
+              const snapshot = await gmgn.liquiditySnapshot(position.address, position.chain);
+              applyExitCandle(position, candle, { exitLiquidity: snapshot?.liquidity });
+            } catch (error) {
+              position.exitRetry = { code: String(error?.code || 'READ_FAILED'), nextAt: requestedAt + 120_000 };
+            }
+          }
+          if (['OPEN', 'RUNNER'].includes(position.status)) applyTimeoutExit(position, {
+            at: candle.closeAt, price: candle.close, liquidity: position.entry.liquidity
+          });
+          position.lastCandleAt = candle.closeAt;
+          if (position.status === 'CLOSED') break;
+        }
+        delete position.pathRetry;
+      }
+    }
+    const remaining = Math.max(0, limit - reads);
+    const jobs = this.dueJobs(now()).filter(job => !(['OPEN', 'RUNNER'].includes(job.trade?.status)
+      && job.trade?.cohort === 'signal')).slice(0, remaining);
+    for (const job of jobs) {
       if (now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
       let sample = null;
       let failure = { code: 'NO_CANDLE', confirmed: false };

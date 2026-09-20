@@ -74,6 +74,33 @@ test('priceAt selects timestamped closed candles, not current price or future ba
   assert.deepEqual(await client.priceAt(address, target, 'bsc'), { at: target, price:2, source:'GMGN_1M_CLOSE' });
 });
 
+test('candlesBetween returns only closed allowlisted 1m OHLC rows in ascending order', async () => {
+  const client = new GmgnClient();
+  const now = Date.now();
+  client.run = async () => ({ list: [
+    { time: now - 120000, open: '1', high: '3', low: '.5', close: '2', secret: 'drop' },
+    { time: now - 180000, open: '1', high: '2', low: '.8', close: '1.5' },
+    { time: now, open: '2', high: '9', low: '1', close: '8' },
+    { time: now - 240000, open: 'bad', high: '2', low: '1', close: '1' }
+  ] });
+  const rows = await client.candlesBetween(address, now - 180000, now, 'bsc', now);
+  assert.deepEqual(rows, [
+    { openAt: now - 180000, closeAt: now - 120000, open: 1, high: 2, low: .8, close: 1.5, source: 'GMGN_1M_OHLC' },
+    { openAt: now - 120000, closeAt: now - 60000, open: 1, high: 3, low: .5, close: 2, source: 'GMGN_1M_OHLC' }
+  ]);
+  assert.doesNotMatch(JSON.stringify(rows), /secret/);
+});
+
+test('liquiditySnapshot returns only a current numeric liquidity value', async () => {
+  const client = new GmgnClient();
+  client.run = async () => ({ data: { liquidity: '12345', raw: 'drop-me' } });
+  const snapshot = await client.liquiditySnapshot(address, 'bsc');
+  assert.equal(snapshot.liquidity, 12345);
+  assert.equal(snapshot.source, 'GMGN_POOL_SNAPSHOT');
+  assert.equal(Number.isFinite(snapshot.at), true);
+  assert.doesNotMatch(JSON.stringify(snapshot), /raw|drop-me/);
+});
+
 test('rejection cohort is deterministic and separated from passed outcomes', () => {
   const rows = [];
   for (let i=1;i<100;i++) sampleRejected(rows, { chain:'bsc', address:'0x'+i.toString(16).padStart(40,'0'), price: 1, status:'HARD_REJECT' }, 10);

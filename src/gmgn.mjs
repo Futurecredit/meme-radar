@@ -263,6 +263,33 @@ export class GmgnClient {
     return rows[0] ? { ...rows[0], source: 'GMGN_1M_CLOSE' } : null;
   }
 
+  async candlesBetween(address, fromAt, toAt, chain, now = Date.now()) {
+    const from = Math.floor(Number(fromAt) / 1000);
+    const to = Math.floor(Number(toAt) / 1000);
+    const raw = await this.run(['market', 'kline', '--chain', chain, '--address', address,
+      '--resolution', '1m', '--from', String(from), '--to', String(to), '--raw']);
+    return normalizeList(raw).map(row => {
+      const rawTime = Number(row.time);
+      const openAt = rawTime < 1_000_000_000_000 ? rawTime * 1000 : rawTime;
+      const values = { open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) };
+      return { openAt, closeAt: openAt + 60_000, ...values, source: 'GMGN_1M_OHLC' };
+    }).filter(row => Number.isFinite(row.openAt)
+      && row.openAt >= Number(fromAt) && row.closeAt <= Number(toAt) && row.closeAt <= Number(now)
+      && [row.open, row.high, row.low, row.close].every(value => Number.isFinite(value) && value > 0)
+      && row.high >= Math.max(row.open, row.close) && row.low <= Math.min(row.open, row.close))
+      .sort((a, b) => a.openAt - b.openAt);
+  }
+
+  async liquiditySnapshot(address, chain) {
+    const raw = await this.run(['token', 'pool', '--chain', chain, '--address', address, '--raw']);
+    const value = unwrap(raw) || {};
+    const rows = Array.isArray(value) ? value : [value, ...(Array.isArray(value.list) ? value.list : [])];
+    const liquidities = rows.map(row => Number(row?.liquidity ?? row?.liquidity_usd ?? row?.usd_liquidity))
+      .filter(value => Number.isFinite(value) && value > 0);
+    if (!liquidities.length) return null;
+    return { at: Date.now(), liquidity: Math.max(...liquidities), source: 'GMGN_POOL_SNAPSHOT' };
+  }
+
   async verifyApiKey(apiKey) {
     const key = normalizeGmgnApiKey(apiKey);
     if (!key) throw translateGmgnError(new Error('invalid api key'));
