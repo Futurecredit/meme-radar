@@ -681,6 +681,7 @@
     .legacy-metric, .metric { display: none; }
     .result-dashboard, .funnel-panel { margin: 0 0 16px; }
     .result-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-top: 1px solid var(--line-soft); }
+    .portfolio-metrics { grid-template-columns: repeat(7, minmax(0, 1fr)); background: #08121688; }
     .result-metric { padding: 13px 14px; border-right: 1px solid var(--line-soft); }
     .result-metric:last-child { border-right: 0; }
     .result-metric span, .result-metric small { display: block; color: var(--muted); }
@@ -793,6 +794,15 @@
         <div class="result-metric"><span data-i18n="unrecoveredCapital">尚未收回本金</span><strong id="labUnrecovered">US$0</strong><small data-i18n="netLiquidationBasis">按净清算口径</small></div>
         <div class="result-metric"><span data-i18n="principalRecovered">已收回本金</span><strong id="labPrincipalRecovered">0</strong><small data-i18n="recoveryTarget">净值翻倍跑本</small></div>
         <div class="result-metric"><span data-i18n="realizedNet">已实现净收益</span><strong id="labRealizedNet">US$0</strong><small data-i18n="costIncluded">已含固定成本与滑点</small></div>
+      </div>
+      <div class="result-metrics portfolio-metrics">
+        <div class="result-metric"><span data-i18n="portfolioInitialLabel">账户本金</span><strong id="portfolioInitial">US$1,000</strong><small data-i18n="portfolioInitialNote">固定本金 1000 USDC</small></div>
+        <div class="result-metric"><span data-i18n="portfolioEquityLabel">账面权益</span><strong id="portfolioEquity">US$1,000</strong><small data-i18n="portfolioEquityNote">现金加未收回成本</small></div>
+        <div class="result-metric"><span data-i18n="portfolioCashLabel">可用现金</span><strong id="portfolioCash">US$1,000</strong><small data-i18n="portfolioCashNote">已扣除待入场预留</small></div>
+        <div class="result-metric"><span data-i18n="portfolioDeployedLabel">持仓占用</span><strong id="portfolioDeployed">US$0</strong><small data-i18n="portfolioDeployedNote">50U/笔 · 最多5仓</small></div>
+        <div class="result-metric"><span data-i18n="portfolioTurnoverLabel">累计成交额</span><strong id="portfolioTurnover">US$0</strong><small data-i18n="portfolioTurnoverNote">不是追加本金</small></div>
+        <div class="result-metric"><span data-i18n="portfolioSlotsLabel">剩余仓位</span><strong id="portfolioSlots">5 / 5</strong><small data-i18n="portfolioSlotsNote">含待入场预留</small></div>
+        <div class="result-metric"><span data-i18n="portfolioSkippedLabel">资金/容量跳过</span><strong id="portfolioSkipped">0</strong><small data-i18n="portfolioSkippedNote">仍继续采集因子</small></div>
       </div>
       <div class="result-detail-grid">
         <div class="result-detail"><h3 data-i18n="factorSnapshots">固定周期因子快照</h3><div class="table compact-table-wrap"><table class="compact-table"><thead><tr><th>5m</th><th>10m</th><th>15m</th></tr></thead><tbody><tr><td id="labM5">--</td><td id="labM10">--</td><td id="labM15">--</td></tr></tbody></table></div></div>
@@ -1180,6 +1190,20 @@
       principalRecovered: ['已收回本金','已收回本金','Principal recovered','元本回収済み','원금 회수','رأس المال المسترد'],
       recoveryTarget: ['净值翻倍跑本','淨值翻倍跑本','Recover at 2× net value','純価値2倍で元本回収','순가치 2배에 원금 회수','استرداد الأصل عند تضاعف الصافي'],
       realizedNet: ['已实现净收益','已實現淨收益','Realized net P/L','実現純損益','실현 순손익','صافي الربح المحقق'],
+      portfolioInitialLabel: ['账户本金','帳戶本金','Starting bankroll','開始元本','시작 자금','رأس المال الابتدائي'],
+      portfolioInitialNote: ['固定本金 1000 USDC','固定本金 1000 USDC','Fixed 1,000 USDC bankroll','固定元本 1,000 USDC','고정 자금 1,000 USDC','رأس مال ثابت 1000 USDC'],
+      portfolioEquityLabel: ['账面权益','帳面權益','Book equity','簿価純資産','장부 자산','حقوق الملكية الدفترية'],
+      portfolioEquityNote: ['现金加未收回成本','現金加未收回成本','Cash plus unrecovered cost','現金＋未回収原価','현금 + 미회수 원가','النقد زائد التكلفة غير المستردة'],
+      portfolioCashLabel: ['可用现金','可用現金','Available cash','利用可能現金','가용 현금','النقد المتاح'],
+      portfolioCashNote: ['已扣除待入场预留','已扣除待入場預留','After pending reservations','予約済み資金控除後','진입 예약 차감 후','بعد خصم الحجوزات'],
+      portfolioDeployedLabel: ['持仓占用','持倉佔用','Capital deployed','使用中元本','투입 원금','رأس المال المستخدم'],
+      portfolioDeployedNote: ['50U/笔 · 最多5仓','每筆50U · 最多5倉','50U each · max 5 positions','1件50U · 最大5枠','건당 50U · 최대 5개','50U لكل صفقة · 5 مراكز كحد أقصى'],
+      portfolioTurnoverLabel: ['累计成交额','累計成交額','Cumulative turnover','累計売買額','누적 거래액','إجمالي التداول'],
+      portfolioTurnoverNote: ['不是追加本金','不是追加本金','Not added capital','追加元本ではない','추가 입금 아님','ليس رأس مال مضافا'],
+      portfolioSlotsLabel: ['剩余仓位','剩餘倉位','Slots available','空き枠','남은 슬롯','الخانات المتاحة'],
+      portfolioSlotsNote: ['含待入场预留','含待入場預留','Includes pending reservations','予約を含む','예약 포함','تشمل الحجوزات'],
+      portfolioSkippedLabel: ['资金/容量跳过','資金/容量跳過','Skipped by cash/capacity','資金・容量で見送り','자금/용량 초과','تم التخطي للنقد/السعة'],
+      portfolioSkippedNote: ['仍继续采集因子','仍繼續採集因子','Factor tracking continues','因子追跡は継続','팩터 추적 계속','يستمر تتبع العوامل'],
       costIncluded: ['已含固定成本与滑点','已含固定成本與滑點','After fixed cost and slippage','固定費・滑り込み','고정비·슬리피지 반영','بعد التكاليف والانزلاق'],
       factorSnapshots: ['固定周期因子快照','固定週期因子快照','Fixed-horizon snapshots','固定期間スナップショット','고정 기간 스냅샷','لقطات الفترات الثابتة'],
       exitSummary: ['退出结果','退出結果','Exit outcomes','退出結果','청산 결과','نتائج الخروج'],
@@ -2388,6 +2412,7 @@
     function renderResultDashboard(data) {
       const summary = data.factorLabSummary || {};
       const capital = summary.capital || {};
+      const portfolio = summary.portfolio || {};
       const exits = summary.exits || {};
       const progress = summary.reportProgress || {};
       const horizon = function (key) { return summary.horizons && summary.horizons[key] || {}; };
@@ -2401,6 +2426,13 @@
       byId('labUnrecovered').textContent = formatMoney(number(capital.unrecoveredPrincipalUsdc));
       byId('labPrincipalRecovered').textContent = formatMoney(number(capital.recoveredPrincipalUsdc));
       byId('labRealizedNet').textContent = formatMoney(number(capital.realizedNetUsdc));
+      byId('portfolioInitial').textContent = formatMoney(number(portfolio.initialUsdc, 1000));
+      byId('portfolioEquity').textContent = formatMoney(number(portfolio.bookEquityUsdc, 1000));
+      byId('portfolioCash').textContent = formatMoney(number(portfolio.availableCashUsdc, 1000));
+      byId('portfolioDeployed').textContent = formatMoney(number(portfolio.deployedUsdc));
+      byId('portfolioTurnover').textContent = formatMoney(number(portfolio.turnoverUsdc));
+      byId('portfolioSlots').textContent = formatCount(number(portfolio.availableSlots, 5)) + ' / ' + formatCount(number(portfolio.maxOpen, 5));
+      byId('portfolioSkipped').textContent = formatCount(number(portfolio.skippedCount));
       byId('labM5').textContent = metricText('m5');
       byId('labM10').textContent = metricText('m10');
       byId('labM15').textContent = metricText('m15');
@@ -2570,12 +2602,14 @@
     function renderShadowLedger(rows) {
       const allRows = Array.isArray(rows) ? rows : [];
       const funded = allRows.filter(function (row) { return Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0; });
-      const pending = allRows.filter(function (row) { return !(Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0); }).length;
+      const skipped = allRows.filter(function (row) { return String(row.portfolioStatus || '').indexOf('SKIPPED_') === 0; }).length;
+      const pending = allRows.filter(function (row) { return !(Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0)
+        && String(row.portfolioStatus || '').indexOf('SKIPPED_') !== 0; }).length;
       const open = funded.filter(function (row) { return row.status === 'OPEN' || row.status === 'RUNNER'; }).length;
       const realized = funded.reduce(function (sum, row) { return sum + number(row.realizedNetUsdc); }, 0);
       byId('shadowLedgerSummary').textContent = funded.length
-        ? '已入场 ' + formatCount(funded.length) + ' · 持仓 ' + formatCount(open) + ' · 已平仓 ' + formatCount(funded.length - open) + ' · 净结果 ' + formatMoney(realized) + ' · 待入场 ' + formatCount(pending)
-        : t('shadowLedgerEmpty') + (pending ? ' · 待入场 ' + formatCount(pending) : '');
+        ? '已入场 ' + formatCount(funded.length) + ' · 持仓 ' + formatCount(open) + ' · 已平仓 ' + formatCount(funded.length - open) + ' · 净结果 ' + formatMoney(realized) + ' · 待入场 ' + formatCount(pending) + ' · 容量跳过 ' + formatCount(skipped)
+        : t('shadowLedgerEmpty') + (pending ? ' · 待入场 ' + formatCount(pending) : '') + (skipped ? ' · 容量跳过 ' + formatCount(skipped) : '');
       byId('shadowLedgerPositions').innerHTML = factorLabTable(
         ['代币 / 链','状态','模拟投入','买入时间 / 价格','卖出时间 / 价格','回收 / 净盈亏','退出原因','研究入口 / 现金流'], funded,
         function (row) {

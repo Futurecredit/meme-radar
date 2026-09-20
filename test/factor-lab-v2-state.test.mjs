@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { FactorLab, FACTOR_LAB_VERSION } from '../src/factor-lab.mjs';
+import { FactorLab, FACTOR_LAB_VERSION, applyPriceSample } from '../src/factor-lab.mjs';
 import { defaultPolicy } from '../src/policy.mjs';
 import { openShadowPosition } from '../src/shadow-position.mjs';
 
@@ -36,6 +36,95 @@ test('V2 persists capital positions separately from zero-capital reference sampl
     assert.equal(Array.isArray(persisted.referenceSamples), true);
     assert.equal(Array.isArray(persisted.reports), true);
     assert.equal(Object.hasOwn(persisted, 'trades'), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('finite bankroll reserves five 50 USDC slots while skipped signals still collect factor prices', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-bankroll-'));
+  try {
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1 });
+    const signals = Array.from({ length: 6 }, (_, index) => lab.recordCandidate(row({
+      address: `0x${String(index + 1).padStart(40, '0')}`
+    }), { now: index + 1 }));
+    assert.deepEqual(signals.slice(0, 5).map(item => item.portfolioStakeUsdc), [50, 50, 50, 50, 50]);
+    assert.ok(signals.slice(0, 5).every(item => item.portfolioStatus === 'RESERVED'));
+    assert.equal(signals[5].portfolioStakeUsdc, 0);
+    assert.equal(signals[5].portfolioStatus, 'SKIPPED_CAPACITY');
+
+    const targetAt = signals[5].entry.targetAt;
+    assert.equal(applyPriceSample(signals[5], { kind: 'entry', targetAt }, {
+      at: targetAt, price: 1, liquidity: 10_000, source: 'GMGN_1M_CLOSE'
+    }), true);
+    assert.equal(signals[5].entry.price, 1);
+    assert.equal(signals[5].allocatedUsdc, undefined);
+    assert.notEqual(signals[5].status, 'OPEN');
+
+    const portfolio = lab.summary(1).portfolio;
+    assert.deepEqual({ initial: portfolio.initialUsdc, stake: portfolio.stakeUsdc, maxOpen: portfolio.maxOpen }, {
+      initial: 1000, stake: 50, maxOpen: 5
+    });
+    assert.equal(portfolio.reservedPositions, 5);
+    assert.equal(portfolio.availableCashUsdc, 750);
+    assert.equal(portfolio.skippedCount, 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('existing pending signals migrate into the finite bankroll without reopening unlimited 100 USDC entries', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-bankroll-migrate-'));
+  try {
+    let lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1 });
+    for (let index = 0; index < 6; index++) lab.recordCandidate(row({
+      address: `0x${String(index + 1).padStart(40, '0')}`
+    }), { now: index + 1 });
+    for (const position of lab.state.positions) {
+      delete position.portfolioStakeUsdc;
+      delete position.portfolioStatus;
+    }
+    lab.save();
+
+    lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 10 });
+    assert.equal(lab.state.positions.filter(item => item.portfolioStatus === 'RESERVED').length, 5);
+    assert.equal(lab.state.positions.filter(item => item.portfolioStatus === 'SKIPPED_CAPACITY').length, 1);
+    assert.ok(lab.state.positions.filter(item => item.portfolioStatus === 'RESERVED')
+      .every(item => item.portfolioStakeUsdc === 50));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('hard rejection before entry cancels the reservation and prevents later capital allocation', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-bankroll-cancel-'));
+  try {
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1 });
+    const position = lab.recordCandidate(row(), { now: 1 });
+    assert.equal(position.portfolioStatus, 'RESERVED');
+    lab.recordCandidate(row({ status: 'HARD_REJECT', price: .5, liquidity: 5_000 }), { now: 2 });
+    assert.equal(position.portfolioStatus, 'CANCELLED_SAFETY');
+    assert.equal(position.portfolioStakeUsdc, 0);
+    assert.equal(position.entry.missingKind, 'safety_cancelled');
+    assert.ok(!lab.dueJobs(120_000).some(job => job.tradeId === position.id && job.kind === 'entry'));
+    assert.equal(applyPriceSample(position, { kind: 'entry', targetAt: position.entry.targetAt }, {
+      at: position.entry.targetAt, price: 1, liquidity: 10_000, source: 'GMGN_1M_CLOSE'
+    }), true);
+    assert.equal(position.allocatedUsdc, undefined);
+    assert.notEqual(position.status, 'OPEN');
+    assert.equal(lab.summary(2).portfolio.availableSlots, 5);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('finite bankroll never tops up after losses and skips entries when less than 50 USDC remains', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-bankroll-cash-'));
+  try {
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1 });
+    lab.state.trades.push({
+      id: 'depleted', cohort: 'signal', chain: 'bsc', address: '0x0000000000000000000000000000000000000099',
+      signalAt: 0, portfolioStatus: 'CLOSED', portfolioStakeUsdc: 1_000, status: 'CLOSED',
+      allocatedUsdc: 1_000, recoveredUsdc: 20, entry: { at: 1, price: 1 }, samples: {},
+      cashflows: [{ at: 1, kind: 'ENTRY', netUsdc: -1_000 }, { at: 2, kind: 'STOP_LOSS', netUsdc: 20 }]
+    });
+    const skipped = lab.recordCandidate(row({ address: '0x0000000000000000000000000000000000000100' }), { now: 3 });
+    assert.equal(skipped.portfolioStatus, 'SKIPPED_CASH');
+    assert.equal(skipped.portfolioStakeUsdc, 0);
+    assert.equal(lab.summary(3).portfolio.cashBalanceUsdc, 20);
+    assert.equal(lab.summary(3).portfolio.availableCashUsdc, 20);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

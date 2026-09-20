@@ -11,6 +11,9 @@ export const FACTOR_LAB_VERSION = 2;
 export const FACTOR_SCHEMA_VERSION = 1;
 export const COST_MODEL_VERSION = POSITION_COST_MODEL_VERSION;
 export const SHADOW_NOTIONAL_USDC = 100;
+export const PORTFOLIO_INITIAL_USDC = 1_000;
+export const PORTFOLIO_STAKE_USDC = 50;
+export const PORTFOLIO_MAX_OPEN = 5;
 export const FIXED_ROUND_TRIP_COST = 0.03;
 export const SHADOW_HORIZONS = Object.freeze({
   m5: 5 * 60_000,
@@ -316,16 +319,16 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     && Math.abs(Number(sample.at) - Number(job.targetAt)) <= 60_000;
   if (job.kind === 'entry') {
     if (!valid) return false;
-    if (trade.cohort === 'signal' && trade.legacyFixedHorizonOnly !== true) openShadowPosition(trade, {
-      at: Number(sample.at), price: Number(sample.price),
-      liquidity: finite(sample.liquidity) ?? trade.factors.liquidity,
-      source: String(sample.source || 'GMGN_1M_CLOSE')
-    });
-    else trade.entry = {
+    const entry = {
       targetAt: job.targetAt, at: Number(sample.at), price: Number(sample.price),
       liquidity: finite(sample.liquidity) ?? trade.factors.liquidity,
       source: String(sample.source || 'GMGN_1M_CLOSE')
     };
+    const portfolioStatus = String(trade.portfolioStatus || '');
+    const portfolioFunded = !portfolioStatus || portfolioStatus === 'RESERVED';
+    if (trade.cohort === 'signal' && trade.legacyFixedHorizonOnly !== true && portfolioFunded) {
+      openShadowPosition(trade, entry);
+    } else trade.entry = entry;
     trade.chaseRisk = finite(trade.signalPrice) > 0
       && Math.abs(trade.entry.price / trade.signalPrice - 1) > 0.20;
     delete trade.retries?.entry;
@@ -462,10 +465,39 @@ function migrateState(raw, policy, now) {
       .map(row => ({ ...row, notionalUsdc: 0, legacyFixedHorizonOnly: true }))
     : [];
   const positions = raw.version === FACTOR_LAB_VERSION && Array.isArray(raw.positions)
-    ? raw.positions.filter(row => row && typeof row === 'object').slice(-MAX_TRADES) : [];
+    ? raw.positions.filter(row => row && typeof row === 'object').slice(-MAX_TRADES).map(row => ({ ...row })) : [];
   const referenceSamples = raw.version === FACTOR_LAB_VERSION && Array.isArray(raw.referenceSamples)
     ? raw.referenceSamples.filter(row => row && typeof row === 'object').slice(-MAX_TRADES)
     : legacyRows;
+  const aggregates = Array.isArray(raw.aggregates) ? raw.aggregates.slice(-1_000) : [];
+  let portfolioMigrated = false;
+  for (const position of positions.sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0))) {
+    if (position.portfolioStatus) continue;
+    portfolioMigrated = true;
+    if (Number(position.allocatedUsdc) > 0) {
+      position.portfolioStakeUsdc = Number(position.allocatedUsdc);
+      position.portfolioStatus = ['OPEN', 'RUNNER', 'CLOSED'].includes(position.status) ? position.status : 'CLOSED';
+    } else if (position.entry?.missingKind) {
+      position.portfolioStakeUsdc = 0;
+      position.portfolioStatus = 'ENTRY_UNAVAILABLE';
+    } else if (position.entry?.price) {
+      position.portfolioStakeUsdc = 0;
+      position.portfolioStatus = 'SKIPPED_LEGACY';
+    } else {
+      const portfolio = portfolioSnapshot(positions, aggregates);
+      if (portfolio.availableSlots < 1) {
+        position.portfolioStakeUsdc = 0;
+        position.portfolioStatus = 'SKIPPED_CAPACITY';
+      } else if (portfolio.availableCashUsdc < PORTFOLIO_STAKE_USDC) {
+        position.portfolioStakeUsdc = 0;
+        position.portfolioStatus = 'SKIPPED_CASH';
+      } else {
+        position.portfolioStakeUsdc = PORTFOLIO_STAKE_USDC;
+        position.portfolioStatus = 'RESERVED';
+      }
+    }
+  }
+  if (portfolioMigrated) history.push({ at: now, type: 'PORTFOLIO_LIMITS_APPLIED', reason: 'finite_bankroll_v1' });
   return {
     version: FACTOR_LAB_VERSION,
     autoPromotionEnabled: raw.autoPromotionEnabled !== false,
@@ -480,7 +512,7 @@ function migrateState(raw, policy, now) {
     referenceSamples,
     reports: Array.isArray(raw.reports) ? raw.reports.slice(-1_000) : [],
     trades: [...positions, ...referenceSamples],
-    aggregates: Array.isArray(raw.aggregates) ? raw.aggregates.slice(-1_000) : [],
+    aggregates,
     history,
     lastPromotionAt: finite(raw.lastPromotionAt) ?? 0,
     disabledReason: typeof raw.disabledReason === 'string' ? raw.disabledReason.slice(0, 80) : ''
@@ -619,6 +651,8 @@ function publicPosition(position) {
   return {
     ...publicTrade(position),
     status: String(position.status || '').slice(0, 24),
+    portfolioStatus: String(position.portfolioStatus || '').slice(0, 32),
+    portfolioStakeUsdc: finite(position.portfolioStakeUsdc),
     allocatedUsdc: finite(position.allocatedUsdc), recoveredUsdc: finite(position.recoveredUsdc),
     remainingUnits: finite(position.remainingUnits), highWaterNetUsdc: finite(position.highWaterNetUsdc),
     realizedNetUsdc: finite(position.realizedNetUsdc), conservativeReturn: finite(position.conservativeReturn),
@@ -629,6 +663,39 @@ function publicPosition(position) {
       price: finite(row.price), liquidity: finite(row.liquidity), netUsdc: finite(row.netUsdc),
       fixedCostRate: finite(row.fixedCostRate), dynamicImpactRate: finite(row.dynamicImpactRate)
     }))
+  };
+}
+
+function portfolioSnapshot(trades = [], aggregates = []) {
+  const positions = trades.filter(row => row?.cohort === 'signal' && row?.legacyFixedHorizonOnly !== true);
+  const archived = aggregates.reduce((total, row) => {
+    total.realized += Number(row?.capital?.realizedNetUsdc || 0);
+    total.turnover += Number(row?.capital?.allocatedUsdc || 0);
+    return total;
+  }, { realized: 0, turnover: 0 });
+  const cashflowNet = positions.reduce((sum, row) => sum + (Array.isArray(row.cashflows)
+    ? row.cashflows.reduce((flow, item) => flow + Number(item?.netUsdc || 0), 0) : 0), 0);
+  const reserved = positions.filter(row => row.portfolioStatus === 'RESERVED' && !(Number(row.allocatedUsdc) > 0));
+  const open = positions.filter(row => ['OPEN', 'RUNNER'].includes(row.status) && Number(row.allocatedUsdc) > 0);
+  const cashBalanceUsdc = PORTFOLIO_INITIAL_USDC + archived.realized + cashflowNet;
+  const reservedUsdc = reserved.reduce((sum, row) => sum + Number(row.portfolioStakeUsdc || 0), 0);
+  const deployedUsdc = open.reduce((sum, row) => sum
+    + Math.max(0, Number(row.allocatedUsdc || 0) - Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0))), 0);
+  const turnoverUsdc = archived.turnover + positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0);
+  return {
+    initialUsdc: PORTFOLIO_INITIAL_USDC,
+    stakeUsdc: PORTFOLIO_STAKE_USDC,
+    maxOpen: PORTFOLIO_MAX_OPEN,
+    cashBalanceUsdc,
+    availableCashUsdc: Math.max(0, cashBalanceUsdc - reservedUsdc),
+    deployedUsdc,
+    reservedUsdc,
+    bookEquityUsdc: cashBalanceUsdc + deployedUsdc,
+    turnoverUsdc,
+    openPositions: open.length,
+    reservedPositions: reserved.length,
+    availableSlots: Math.max(0, PORTFOLIO_MAX_OPEN - open.length - reserved.length),
+    skippedCount: positions.filter(row => String(row.portfolioStatus || '').startsWith('SKIPPED_')).length
   };
 }
 
@@ -913,13 +980,20 @@ export class FactorLab {
     if (candidate?.status === 'HARD_REJECT') {
       const key = tokenKey(candidate.chain, candidate.address);
       for (const position of this.state.trades.filter(row => row.cohort === 'signal'
-        && tokenKey(row.chain, row.address) === key && ['OPEN', 'RUNNER'].includes(row.status))) {
-        const tradable = finite(candidate.price) > 0 && finite(candidate.liquidity) > 0
-          && candidate.deep?.security?.honeypot !== true;
-        applySafetyExit(position, {
-          at: now, price: candidate.price, liquidity: candidate.liquidity,
-          tradable, code: 'SAFETY_HARD_REJECT'
-        });
+        && tokenKey(row.chain, row.address) === key)) {
+        if (['OPEN', 'RUNNER'].includes(position.status)) {
+          const tradable = finite(candidate.price) > 0 && finite(candidate.liquidity) > 0
+            && candidate.deep?.security?.honeypot !== true;
+          applySafetyExit(position, {
+            at: now, price: candidate.price, liquidity: candidate.liquidity,
+            tradable, code: 'SAFETY_HARD_REJECT'
+          });
+        } else if (position.portfolioStatus === 'RESERVED' && !position.entry?.price) {
+          position.portfolioStatus = 'CANCELLED_SAFETY';
+          position.portfolioStakeUsdc = 0;
+          position.entry = { ...position.entry, missingKind: 'safety_cancelled', missingAt: now };
+          position.latestDecision = 'HARD_REJECT';
+        }
       }
     }
     const cohort = cohortFor(candidate);
@@ -948,6 +1022,19 @@ export class FactorLab {
       cohort, signalAt: now, policy: { discovery: this.state.champion.strategy.discovery },
       strategy: this.state.champion.strategy, exploration
     });
+    if (cohort === 'signal') {
+      const portfolio = portfolioSnapshot(this.state.trades, this.state.aggregates);
+      if (portfolio.availableSlots < 1) {
+        trade.portfolioStakeUsdc = 0;
+        trade.portfolioStatus = 'SKIPPED_CAPACITY';
+      } else if (portfolio.availableCashUsdc < PORTFOLIO_STAKE_USDC) {
+        trade.portfolioStakeUsdc = 0;
+        trade.portfolioStatus = 'SKIPPED_CASH';
+      } else {
+        trade.portfolioStakeUsdc = PORTFOLIO_STAKE_USDC;
+        trade.portfolioStatus = 'RESERVED';
+      }
+    }
     this.state.trades.push(trade);
     if (cohort === 'signal') matchControl(trade, this.state.trades.filter(row => row.cohort === 'control'));
     this.prune(now);
@@ -1093,6 +1180,10 @@ export class FactorLab {
         job.trade.retries ||= {};
         if (job.kind === 'entry' && (attempts >= 5 || now() - job.targetAt >= 30 * 60_000)) {
           job.trade.entry = { ...job.trade.entry, missingKind: 'entry_unavailable', missingAt: now() };
+          if (job.trade.portfolioStatus === 'RESERVED') {
+            job.trade.portfolioStatus = 'ENTRY_UNAVAILABLE';
+            job.trade.portfolioStakeUsdc = 0;
+          }
           delete job.trade.retries.entry;
         } else job.trade.retries[key] = {
           attempts, code: failure.code,
@@ -1236,6 +1327,7 @@ export class FactorLab {
       matchedPairs: signals.filter(row => row.matchedTradeId).length,
       capital: { positionCount, allocatedUsdc, openPositions,
         unrecoveredPrincipalUsdc, recoveredPrincipalUsdc, principalRecovered, realizedNetUsdc },
+      portfolio: portfolioSnapshot(this.state.trades, this.state.aggregates),
       exits: {
         stopRate: rate('STOP_LOSS'), principalRecoveryRate: positionCount ? principalRecovered / positionCount : 0,
         trailingRate: rate('TRAILING_DRAWDOWN'), timeoutRate: rate('EXPERIMENT_TIMEOUT'),

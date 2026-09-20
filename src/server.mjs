@@ -413,6 +413,15 @@ function publicFactorLabSummary(source = {}) {
       recoveredPrincipalUsdc: finite(source.capital?.recoveredPrincipalUsdc),
       principalRecovered: finite(source.capital?.principalRecovered), realizedNetUsdc: finite(source.capital?.realizedNetUsdc)
     },
+    portfolio: {
+      initialUsdc: finite(source.portfolio?.initialUsdc), stakeUsdc: finite(source.portfolio?.stakeUsdc),
+      maxOpen: finite(source.portfolio?.maxOpen), cashBalanceUsdc: finite(source.portfolio?.cashBalanceUsdc),
+      availableCashUsdc: finite(source.portfolio?.availableCashUsdc), deployedUsdc: finite(source.portfolio?.deployedUsdc),
+      reservedUsdc: finite(source.portfolio?.reservedUsdc), bookEquityUsdc: finite(source.portfolio?.bookEquityUsdc),
+      turnoverUsdc: finite(source.portfolio?.turnoverUsdc), openPositions: finite(source.portfolio?.openPositions),
+      reservedPositions: finite(source.portfolio?.reservedPositions), availableSlots: finite(source.portfolio?.availableSlots),
+      skippedCount: finite(source.portfolio?.skippedCount)
+    },
     exits: Object.fromEntries(['stopRate', 'principalRecoveryRate', 'trailingRate', 'timeoutRate', 'safetyRate']
       .map(key => [key, finiteOrNull(source.exits?.[key])])),
     reportProgress: {

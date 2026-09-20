@@ -102,6 +102,12 @@ test('status/export include sanitized factor lab data and manual policy save cre
 
   const status = await dispatch(server, 'GET', '/api/status');
   assert.equal(status.body.factorLabSummary.championVersion, baseline);
+  assert.deepEqual(status.body.factorLabSummary.portfolio, {
+    initialUsdc: 1000, stakeUsdc: 50, maxOpen: 5,
+    cashBalanceUsdc: 1000, availableCashUsdc: 1000, deployedUsdc: 0, reservedUsdc: 0,
+    bookEquityUsdc: 1000, turnoverUsdc: 0, openPositions: 0, reservedPositions: 0,
+    availableSlots: 5, skippedCount: 0
+  });
   assert.equal(status.body.funnelSummary.counts.experimentalSignals, 2);
   assert.deepEqual(status.body.funnelSummary.lossReasons[0], { reason: '流动性不足', count: 4 });
   const changed = defaultPolicy(); changed.discovery.minMarketCap = 11_000;

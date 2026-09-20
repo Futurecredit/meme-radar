@@ -345,3 +345,17 @@ test('真实影子仓位常驻结果总览并展示全链买卖时间价格、�
   assert.match(html, /data-shadow-copy/);
   assert.match(html, /actionLinks\(\{ address: row\.address, chain: row\.chain, symbol: row\.symbol, gmgnUrl: row\.gmgnUrl, info: \{ website: row\.website, twitter: row\.twitter \} \}\)/);
 });
+
+test('有限本金账户区分本金、现金、占用、权益、累计成交额和容量跳过', () => {
+  for (const id of ['portfolioInitial', 'portfolioEquity', 'portfolioCash', 'portfolioDeployed', 'portfolioTurnover', 'portfolioSlots', 'portfolioSkipped']) {
+    assert.match(html, new RegExp('id="' + id + '"'));
+  }
+  assert.match(html, /1000\s*USDC/);
+  assert.match(html, /50U\/笔/);
+  assert.match(html, /最多5仓/);
+  assert.match(html, /data-i18n="portfolioInitialNote"/);
+  assert.match(html, /data-i18n="portfolioDeployedNote"/);
+  assert.match(html, /资金\/容量跳过/);
+  assert.match(html, /portfolio\.availableCashUsdc/);
+  assert.match(html, /portfolio\.skippedCount/);
+});

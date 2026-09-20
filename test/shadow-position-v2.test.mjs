@@ -30,6 +30,33 @@ test('V2 entry invests 100 USDC with split fixed cost and entry impact', async (
   assert.equal(position.status, 'OPEN');
 });
 
+test('finite bankroll positions size stop and recovery thresholds from a 50 USDC stake', async () => {
+  const { openShadowPosition, applyExitCandle } = await positionModule();
+  const stopped = { ...trade(), portfolioStakeUsdc: 50 };
+  assert.equal(openShadowPosition(stopped, { at: 60_000, price: 1, liquidity: 10_000 }), true);
+  assert.equal(stopped.allocatedUsdc, 50);
+  assert.equal(stopped.cashflows[0].netUsdc, -50);
+  assert.ok(stopped.remainingUnits > 48 && stopped.remainingUnits < 50);
+  applyExitCandle(stopped, candle({ openAt: 120_000, closeAt: 180_000, open: .8, high: .9, low: .5, close: .6 }), { exitLiquidity: 10_000 });
+  assert.ok(Math.abs(stopped.recoveredUsdc - 35) < 1e-6);
+
+  const recovered = { ...trade(), id: 'signal-2', portfolioStakeUsdc: 50 };
+  openShadowPosition(recovered, { at: 60_000, price: 1, liquidity: 10_000 });
+  applyExitCandle(recovered, candle({ openAt: 120_000, closeAt: 180_000, open: 2.1, high: 2.5, low: 2.1, close: 2.2 }), { exitLiquidity: 10_000 });
+  assert.equal(recovered.status, 'RUNNER');
+  assert.ok(Math.abs(recovered.recoveredUsdc - 50) < 1e-9);
+});
+
+test('entry candle cannot trigger an exit with price movement that happened before entry', async () => {
+  const { openShadowPosition, applyExitCandle } = await positionModule();
+  const position = trade();
+  openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
+  const result = applyExitCandle(position, candle({ openAt: 0, closeAt: 60_000, open: 2, high: 3, low: .1, close: 1 }), { exitLiquidity: 10_000 });
+  assert.deepEqual(result, { event: null, applied: false, ignored: 'PRE_ENTRY_CANDLE' });
+  assert.equal(position.status, 'OPEN');
+  assert.equal(position.cashflows.length, 1);
+});
+
 test('stop loss exits all at 70 net liquidation and gap uses worse open', async () => {
   const { openShadowPosition, applyExitCandle } = await positionModule();
   const position = trade();
