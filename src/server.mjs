@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeGmgnApiKey } from './gmgn-key-store.mjs';
 import { secondaryChainSupport } from './secondary.mjs';
+import { screeningRuleManifest } from './screening-rules.mjs';
 
 const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const CHAIN_IDS = new Set(['sol', 'bsc', 'base', 'eth', 'robinhood', 'arc', 'stable']);
@@ -142,6 +143,8 @@ function publicCandidate(row = {}) {
     twitter: text(row.twitter, 80),
     gmgnUrl: externalUrl(row.gmgnUrl),
     status: text(row.status, 32),
+    experimentEligible: row.experimentEligible === true,
+    evidenceTier: ['formal', 'incomplete'].includes(row.evidenceTier) ? row.evidenceTier : '',
     auditedAt: finite(row.auditedAt),
     staleAt: finite(row.staleAt),
     reviewRevision: text(row.reviewRevision, 64),
@@ -346,6 +349,10 @@ function publicAuditQueueStats(source = {}) {
 
 function publicFunnelSummary(source = {}) {
   return {
+    scopes: {
+      currentCycle: ['discovered', 'prequalified'],
+      recentAuditWindow: ['deepAudited', 'formalCandidates', 'experimentalSignals', 'controls', 'hardRejects']
+    },
     counts: countSummary(source.counts || {}, [
       'discovered', 'prequalified', 'deepAudited', 'formalCandidates',
       'experimentalSignals', 'controls', 'hardRejects'
@@ -889,7 +896,8 @@ export function createServer({ state, settings, controls, factorLab, switchChain
         coverage: Object.fromEntries([...CHAIN_IDS].map(id => [id, {
           dexScreener: Boolean(secondaryChainSupport.dexScreener[id]), goPlus: Boolean(secondaryChainSupport.goPlus[id])
         }])),
-        requestMetrics: countSummary(state.value.requestMetrics || {}, ['requests', 'cacheHits', 'rateLimits', 'cooldownUntil'])
+        requestMetrics: countSummary(state.value.requestMetrics || {}, ['requests', 'cacheHits', 'rateLimits', 'cooldownUntil']),
+        screeningRules: screeningRuleManifest(controls?.policy?.() || {}, settings, factorLab?.effectiveStrategy?.() || {})
       };
       if (url.pathname === '/api/export') {
         const scopes = { ...state.value.chainStates, [state.value.activeChain]: state.value };

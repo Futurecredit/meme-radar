@@ -219,7 +219,13 @@ export function collectionEnvelope(settings) {
   });
 }
 
-export function summarizeFunnel({ discovered = 0, screened = [], candidates = [] } = {}) {
+export function summarizeFunnel({
+  discovered = 0,
+  screened = [],
+  candidates = [],
+  now = Date.now(),
+  auditWindowMs = 30 * 60_000
+} = {}) {
   const lossCounts = new Map();
   for (const item of screened) {
     if (item?.screen?.pass) continue;
@@ -228,15 +234,23 @@ export function summarizeFunnel({ discovered = 0, screened = [], candidates = []
       if (key) lossCounts.set(key, (lossCounts.get(key) || 0) + 1);
     }
   }
+  const recentCandidates = candidates.filter(item => {
+    const auditedAt = num(item?.auditedAt);
+    return auditedAt <= 0 || Math.max(0, num(now) - auditedAt) <= auditWindowMs;
+  });
   return {
+    scopes: {
+      currentCycle: ['discovered', 'prequalified'],
+      recentAuditWindow: ['deepAudited', 'formalCandidates', 'experimentalSignals', 'controls', 'hardRejects']
+    },
     counts: {
       discovered: Math.max(0, Number(discovered) || 0),
       prequalified: screened.filter(item => item?.screen?.pass).length,
-      deepAudited: candidates.length,
-      formalCandidates: candidates.filter(item => item?.status === 'X_REVIEW').length,
-      experimentalSignals: candidates.filter(item => item?.experimentEligible === true && item?.status !== 'HARD_REJECT').length,
-      controls: candidates.filter(item => item?.status === 'WAIT_RECHECK' && item?.experimentEligible !== true).length,
-      hardRejects: candidates.filter(item => item?.status === 'HARD_REJECT').length
+      deepAudited: recentCandidates.length,
+      formalCandidates: recentCandidates.filter(item => item?.status === 'X_REVIEW').length,
+      experimentalSignals: recentCandidates.filter(item => item?.experimentEligible === true && item?.status !== 'HARD_REJECT').length,
+      controls: recentCandidates.filter(item => item?.status === 'WAIT_RECHECK' && item?.experimentEligible !== true).length,
+      hardRejects: recentCandidates.filter(item => item?.status === 'HARD_REJECT').length
     },
     lossReasons: [...lossCounts.entries()].map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason)).slice(0, 10)
@@ -743,7 +757,7 @@ export class Scanner {
           return num(rank[b.status]) - num(rank[a.status]) || Number(b.priorityBand) - Number(a.priorityBand) || num(b.discoveryScore) - num(a.discoveryScore);
         })
         .slice(0, 200);
-      const funnelSummary = summarizeFunnel({ discovered: discovered.length, screened, candidates });
+      const funnelSummary = summarizeFunnel({ discovered: discovered.length, screened, candidates, now });
       const rejected = screened.filter(item => !item.screen.pass).slice(0, 100).map(item => ({
         address: String(item.row.address || ''), symbol: String(item.row.symbol || '?').slice(0, 30),
         marketCap: marketCap(item.row), createdAt: createdAt(item.row), reasons: item.screen.reasons

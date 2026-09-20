@@ -68,7 +68,7 @@ test('六语切换持久化并支持阿拉伯语RTL', () => {
   assert.match(html, /document\.documentElement\.dir = currentLocale === 'ar' \? 'rtl' : 'ltr'/);
   assert.match(html, /html\[dir="rtl"\]/);
   assert.match(html, /data-i18n="appTitle"/);
-  assert.match(html, /data-i18n="auditTitle"/);
+  assert.match(html, /data-i18n="screeningAuditTitle"/);
   assert.match(html, /t\(statusKeys\[data\.status\]/);
   assert.doesNotMatch(html, /GMGN多链候选雷达 · 只扫描、只筛选、永不下单/);
 });
@@ -105,12 +105,14 @@ test('多链切换仅向本地后端提交白名单链标识', () => {
   assert.match(html, /renderChainSwitcher\(null\)/);
 });
 
-test('页面不再公开展示严格筛选规则', () => {
-  assert.doesNotMatch(html, /严格筛选标准/);
-  assert.doesNotMatch(html, /Strict screening rules/);
-  assert.doesNotMatch(html, /data-i18n="criterion[1-8]"/);
-  assert.doesNotMatch(html, /\bcriteriaTitle\s*:/);
-  assert.doesNotMatch(html, /class="criteria"/);
+test('筛选规则按需在弹窗展示而不常驻占用首页', () => {
+  assert.match(html, /id="screeningRulesButton"/);
+  assert.match(html, /id="screeningRulesDialog"/);
+  assert.match(html, /function renderScreeningRules\(/);
+  assert.match(html, /data\.screeningRules/);
+  const dialog = html.match(/<dialog id="screeningRulesDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+  assert.match(dialog, /id="screeningRulesContent"/);
+  assert.doesNotMatch(html.slice(0, html.indexOf('<dialog id="screeningRulesDialog"')), /严格筛选标准/);
 });
 
 test('GMGN密钥仅提交给同源接口且不会持久化或回显', () => {
@@ -271,13 +273,18 @@ test('固定周期因子实验室使用紧凑表格并按需加载明细', () =>
   assert.match(html, /String\(row\.entry\.price\)/);
 });
 
-test('首页按结果、正式候选、漏斗、即时榜、实验室和运行设置排序', () => {
+test('首页融合结果与运行状态、筛选漏斗与深审表格', () => {
   for (const marker of ['resultDashboard', 'formalCandidatesPanel', 'funnelPanel', 'livePanel', 'factorLabPanel', 'managePanel', 'runtimePanel']) {
     assert.match(html, new RegExp('id="' + marker + '"'));
   }
+  const resultStart = html.indexOf('id="resultDashboard"');
+  const resultEnd = html.indexOf('</section>', resultStart);
+  assert.ok(html.indexOf('id="runtimePanel"', resultStart) < resultEnd);
+  const auditStart = html.indexOf('id="formalCandidatesPanel"');
+  const auditEnd = html.indexOf('</article>', auditStart);
+  assert.ok(html.indexOf('id="funnelPanel"', auditStart) < auditEnd);
   assert.match(html, /#resultDashboard\s*{[^}]*order:\s*3/);
   assert.match(html, /#formalCandidatesPanel\s*{[^}]*order:\s*4/);
-  assert.match(html, /#funnelPanel\s*{[^}]*order:\s*5/);
   assert.match(html, /#livePanel\s*{[^}]*order:\s*6/);
   assert.match(html, /#factorLabPanel\s*{[^}]*order:\s*7/);
   assert.match(html, /#managePanel\s*{[^}]*order:\s*8/);
@@ -294,13 +301,21 @@ test('顶部结果总览包含资金、固定周期、退出率和报告进度',
   assert.match(html, /summary.reportProgress/);
 });
 
-test('正式候选只渲染完整通过记录且漏斗展示主要流失原因', () => {
+test('审计阶段标签可筛选全部深审状态且逐币可查看判定依据', () => {
   const start = html.indexOf('function renderCandidates');
   const end = html.indexOf('function activeChain', start);
-  assert.match(html.slice(start, end), /backendDisposition\(row\) === 'chain'/);
+  assert.doesNotMatch(html.slice(start, end), /backendDisposition\(row\) === 'chain'\s*&&/);
   assert.match(html, /id="funnelCounts"/);
   assert.match(html, /id="funnelReasons"/);
   assert.match(html, /function renderFunnel/);
+  assert.match(html, /data-funnel-filter/);
+  assert.match(html, /id="candidateWhyDialog"/);
+  assert.match(html, /data-action="why"/);
+  assert.match(html, /function openCandidateWhy\(/);
+  const funnelStart = html.indexOf('function renderFunnel');
+  const funnelEnd = html.indexOf('function ruleLimit', funnelStart);
+  assert.doesNotMatch(html.slice(funnelStart, funnelEnd), /style=/);
+  assert.match(html, /funnel-strip steps-/);
 });
 
 test('实验室分离真实仓位、未投入本金参考样本和阶段报告', () => {

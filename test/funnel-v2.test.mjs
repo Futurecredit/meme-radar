@@ -92,7 +92,28 @@ test('funnel summary separates formal, experimental, control and hard-reject out
     discovered: 6, prequalified: 2, deepAudited: 4, formalCandidates: 1,
     experimentalSignals: 2, controls: 1, hardRejects: 1
   });
+  assert.deepEqual(summary.scopes, {
+    currentCycle: ['discovered', 'prequalified'],
+    recentAuditWindow: ['deepAudited', 'formalCandidates', 'experimentalSignals', 'controls', 'hardRejects']
+  });
   assert.deepEqual(summary.lossReasons[0], { reason: '流动性不足', count: 2 });
+});
+
+test('funnel recent audit counts exclude candidates older than thirty minutes', async () => {
+  const { summarizeFunnel } = await import('../src/scanner.mjs');
+  const now = 2_000_000;
+  const summary = summarizeFunnel({
+    discovered: 0,
+    screened: [],
+    now,
+    candidates: [
+      { status: 'X_REVIEW', experimentEligible: true, auditedAt: now - 29 * 60_000 },
+      { status: 'HARD_REJECT', experimentEligible: false, auditedAt: now - 31 * 60_000 }
+    ]
+  });
+  assert.equal(summary.counts.deepAudited, 1);
+  assert.equal(summary.counts.formalCandidates, 1);
+  assert.equal(summary.counts.hardRejects, 0);
 });
 
 test('one explicit fatal safety value cannot be softened by a related unknown field', () => {

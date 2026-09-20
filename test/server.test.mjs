@@ -99,6 +99,45 @@ test('public status is a field allowlist and removes raw provider and queue deta
   assert.doesNotMatch(serialized, /do-not-return|candidate-secret|queue-secret|outcome-secret|raw-secret|other-secret|secondary-secret|privateField|rawDiscovery|"auditQueue":|"outcomes":/);
 });
 
+test('status publishes a sanitized rule manifest derived from the active policy, hard gates and champion weights', async () => {
+  const policy = {
+    version: 1,
+    discovery: { minMarketCap: 10_000, maxMarketCap: 150_000, priorityMinMarketCap: 20_000, priorityMaxMarketCap: 80_000,
+      minLiquidity: 5_000, strictLiquidity: 8_000, minAgeMinutes: 5, maxAgeMinutes: 60 },
+    live: { minMarketCap: 10_000, maxMarketCap: 500_000, minLiquidity: 3_000, minAgeMinutes: 5 },
+    scan: { intervalSeconds: 120, maxDeepAuditsPerCycle: 6 }
+  };
+  const rulesSettings = {
+    ...settings, maxRugRatio: .20, maxTop10Rate: .30, maxInsiderRate: .15, maxBundlerRate: .15,
+    maxSniperHoldRate: .08, maxBotHoldRate: .20, maxLinkedHoldRate: .10, maxBuyTax: .05,
+    maxSellTax: .05, maxTaxAsymmetry: .02, minLpLockedRate: .80, minOrdinaryWallets: 8
+  };
+  const factorLab = {
+    summary: () => ({ enabled: true }),
+    effectiveStrategy: () => ({ weights: { priorityBand: 35, ordinaryBand: 10, liquidityCap: 25, liquidityDivisor: 1_000,
+      volumeCap: 20, volumeDivisor: 1_000, holdersCap: 20, holdersDivisor: 10, smartTwo: 7, smartThree: 14, kolPenalty: 4 } })
+  };
+  const controls = { value: { annotations: {}, enabledChains: ['sol'] }, policy: () => structuredClone(policy) };
+  const server = createServer({ state: { value: { status: 'RUNNING', activeChain: 'sol', supportedChains: ['sol'] } },
+    settings: rulesSettings, controls, factorLab, supportedChains: ['sol'] });
+  const response = await dispatch(server, { pathName: '/api/status' });
+  assert.equal(response.status, 200);
+  const body = JSON.parse(response.body);
+  assert.deepEqual(body.screeningRules.discovery.marketCapUsd, { minimum: 10_000, maximum: 150_000 });
+  assert.deepEqual(body.screeningRules.discovery.ageMinutes, { minimum: 5, maximum: 60 });
+  assert.equal(body.screeningRules.discovery.explicitRiskCaps.rugRatio, .30);
+  assert.equal(body.screeningRules.deep.lpLockedRate.minimum, .80);
+  assert.equal(body.screeningRules.deep.buyTaxRate.maximum, .05);
+  assert.equal(body.screeningRules.deep.ordinaryWallets.minimum, 8);
+  assert.equal(body.screeningRules.observation.closedMinuteBars.minimum, 5);
+  assert.equal(body.screeningRules.observation.return5m.maximum, .80);
+  assert.equal(body.screeningRules.sellability.distinctRecentSellers.minimum, 5);
+  assert.equal(body.screeningRules.ranking.weights.priorityBand, 35);
+  assert.deepEqual(body.screeningRules.automaticTuning.mutable,
+    ['marketCap', 'liquidity', 'age', 'priorityBand', 'volume', 'holders', 'smartMoney', 'kolPenalty']);
+  assert.doesNotMatch(JSON.stringify(body.screeningRules), /"(?:apiKey|privateKey|secret|rawResponse|rawPayload)"/i);
+});
+
 test('health separates service liveness from scanner readiness and freshness', () => {
   const now = 1_800_000_000_000;
   const ready = healthSnapshot({ status: 'RUNNING', lastSuccessAt: now - 10_000 }, settings, now);

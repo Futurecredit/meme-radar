@@ -381,7 +381,7 @@
 
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) minmax(170px, auto) minmax(190px, auto);
+      grid-template-columns: minmax(220px, 1fr) minmax(190px, auto);
       gap: 10px;
       padding: 13px 16px;
       border-bottom: 1px solid var(--line);
@@ -672,7 +672,6 @@
     .grid { display: contents; }
     #resultDashboard { order: 3; }
     #formalCandidatesPanel { order: 4; }
-    #funnelPanel { order: 5; }
     #livePanel { order: 6; }
     #factorLabPanel { order: 7; }
     #managePanel { order: 8; }
@@ -689,18 +688,37 @@
     .result-detail-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; padding: 12px 16px 16px; }
     .result-detail { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px; background: #08121688; }
     .result-detail h3 { margin: 0 0 7px; font-size: 15px; }
-    .funnel-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; background: var(--line-soft); }
-    .funnel-step { padding: 10px; background: #0c171c; text-align: center; }
+    .result-runtime { border-top: 1px solid var(--line-soft); box-shadow: inset 0 1px #071014; }
+    .result-runtime .telemetry-item { min-height: 74px; padding: 10px 14px; }
+    .result-runtime .telemetry-item label { margin-bottom: 4px; }
+    .embedded-funnel { border-bottom: 1px solid var(--line-soft); background: #08121688; }
+    .funnel-groups { display: grid; grid-template-columns: 2fr 5fr; gap: 1px; background: var(--line-soft); }
+    .funnel-group { background: #0b151a; }
+    .funnel-group-title { padding: 7px 10px; color: var(--muted); font-size: 14px; border-bottom: 1px solid var(--line-soft); }
+    .funnel-strip { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 1px; background: var(--line-soft); }
+    .funnel-strip.steps-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .funnel-strip.steps-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .funnel-step { min-height: 64px; padding: 9px; border: 0; border-radius: 0; background: #0c171c; color: var(--text); text-align: center; cursor: pointer; }
+    .funnel-step:hover, .funnel-step.active { background: #17342a; color: var(--green); }
     .funnel-step strong, .funnel-step span { display: block; }
     .funnel-reasons { padding: 10px 16px 14px; color: var(--muted); }
+    .rules-dialog { max-width: 940px; max-height: 88vh; overflow: auto; }
+    .rules-dialog h3 { margin: 0; }
+    .rule-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+    .rule-group { border: 1px solid var(--line-soft); border-radius: 9px; overflow: hidden; }
+    .rule-group h4 { margin: 0; padding: 9px 11px; background: #13252c; color: var(--cyan); }
+    .rule-row { display: grid; grid-template-columns: 1.35fr 1fr; gap: 10px; padding: 7px 11px; border-top: 1px solid var(--line-soft); }
+    .rule-row span:last-child { text-align: right; font-family: ui-monospace, monospace; }
+    .why-summary { margin: 10px 0; color: var(--muted); }
     @media (max-width: 1100px) {
       .result-metrics { grid-template-columns: repeat(3, 1fr); }
       .result-detail-grid { grid-template-columns: 1fr; }
-      .funnel-strip { grid-template-columns: repeat(4, 1fr); }
+      .funnel-groups { grid-template-columns: 1fr; }
+      .rule-groups { grid-template-columns: 1fr; }
     }
     @media (max-width: 620px) {
       .result-metrics { grid-template-columns: repeat(2, 1fr); }
-      .funnel-strip { grid-template-columns: repeat(2, 1fr); }
+      .funnel-strip.steps-2, .funnel-strip.steps-5 { grid-template-columns: repeat(2, 1fr); }
     }
     @media (max-width: 1000px) { .policy-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); } }
     @media (max-width: 620px) { .policy-grid { grid-template-columns: 1fr; } }
@@ -773,12 +791,14 @@
         <div class="result-detail"><h3 data-i18n="exitSummary">退出结果</h3><div id="labExitRates">--</div></div>
         <div class="result-detail"><h3 data-i18n="reportProgress">数据与下次总结</h3><div id="labDataQuality">--</div><div id="labReportProgress">--</div></div>
       </div>
-    </section>
-
-    <section id="funnelPanel" class="panel funnel-panel" aria-labelledby="funnelTitle">
-      <div class="head"><h2 id="funnelTitle" data-i18n="funnelTitle">筛选漏斗</h2><span data-i18n="funnelSubtitle">未知证据进入深审，明确致命风险仍硬拒绝</span></div>
-      <div id="funnelCounts" class="funnel-strip"></div>
-      <div id="funnelReasons" class="funnel-reasons"></div>
+      <div id="runtimePanel" class="telemetry result-runtime" aria-label="运行状态" data-i18n-aria="runtimeAria">
+        <div class="telemetry-item"><label data-i18n="localService">本地服务</label><strong id="serviceState" data-i18n="connecting">正在连接</strong><small id="serviceDetail" data-i18n="port3791">端口3791</small></div>
+        <div class="telemetry-item"><label data-i18n="gmgnSource">GMGN数据源</label><strong id="providerState" data-i18n="waitingState">等待状态</strong><small id="providerDetail" data-i18n="notRead">尚未读取</small></div>
+        <div class="telemetry-item"><label data-i18n="lastAttemptLabel">最近扫描尝试</label><strong id="lastAttempt">--</strong><small id="attemptAgo" data-i18n="noRecord">暂无记录</small></div>
+        <div class="telemetry-item"><label data-i18n="lastSuccessLabel">最近成功扫描</label><strong id="lastSuccess">--</strong><small id="successAgo" data-i18n="noRecord">暂无记录</small></div>
+        <div class="telemetry-item"><label data-i18n="nextScanLabel">下轮扫描</label><strong id="nextScan">--</strong><small id="scanProgress" data-i18n="waitingSchedule">等待调度</small></div>
+        <div class="telemetry-item"><label data-i18n="freshnessLabel">数据新鲜度</label><strong id="freshnessState" data-i18n="waitingData">等待数据</strong><small id="freshnessDetail" data-i18n="notJudged">尚未判断</small></div>
+      </div>
     </section>
 
     <section id="livePanel" class="panel live-panel" aria-labelledby="liveTitle">
@@ -837,15 +857,6 @@
         </details>
         <div id="importantAlerts" class="manage-body" aria-live="polite"></div>
       </article>
-      <article id="runtimePanel" class="panel telemetry" aria-label="运行状态" data-i18n-aria="runtimeAria">
-        <div class="telemetry-item"><label data-i18n="localService">本地服务</label><strong id="serviceState" data-i18n="connecting">正在连接</strong><small id="serviceDetail" data-i18n="port3791">端口3791</small></div>
-        <div class="telemetry-item"><label data-i18n="gmgnSource">GMGN数据源</label><strong id="providerState" data-i18n="waitingState">等待状态</strong><small id="providerDetail" data-i18n="notRead">尚未读取</small></div>
-        <div class="telemetry-item"><label data-i18n="lastAttemptLabel">最近扫描尝试</label><strong id="lastAttempt">--</strong><small id="attemptAgo" data-i18n="noRecord">暂无记录</small></div>
-        <div class="telemetry-item"><label data-i18n="lastSuccessLabel">最近成功扫描</label><strong id="lastSuccess">--</strong><small id="successAgo" data-i18n="noRecord">暂无记录</small></div>
-        <div class="telemetry-item"><label data-i18n="nextScanLabel">下轮扫描</label><strong id="nextScan">--</strong><small id="scanProgress" data-i18n="waitingSchedule">等待调度</small></div>
-        <div class="telemetry-item"><label data-i18n="freshnessLabel">数据新鲜度</label><strong id="freshnessState" data-i18n="waitingData">等待数据</strong><small id="freshnessDetail" data-i18n="notJudged">尚未判断</small></div>
-      </article>
-
       <article class="panel metric"><label><span data-i18n="scanRounds">扫描轮次</span> <span class="scope" data-i18n="cumulative">累计</span></label><strong id="scanCount">0</strong><small data-i18n="completedRounds">成功完成的历史轮次</small></article>
       <article class="panel metric"><label><span data-i18n="discoveredTokens">发现代币</span> <span class="scope" data-i18n="currentRound">本轮</span></label><strong id="discovered">0</strong><small data-i18n="gmgnReturned">本轮GMGN返回数量</small></article>
       <article class="panel metric"><label><span data-i18n="prequalifiedLabel">初筛通过</span> <span class="scope" data-i18n="currentRound">本轮</span></label><strong id="prequalified">0</strong><small id="prequalifiedDetail" data-i18n="awaitingAudit">等待或已进入深度审计</small></article>
@@ -908,21 +919,16 @@
 
       <article id="formalCandidatesPanel" class="panel wide">
         <div class="head">
-          <h2 data-i18n="auditTitle">近30分钟深度审计</h2>
-          <span data-i18n="auditSubtitle">市值2万–8万优先 · 创建至少5分钟 · 系统按GMGN额度分批深审</span>
+          <div><h2 data-i18n="screeningAuditTitle">筛选与深度审计</h2><span data-i18n="auditSubtitle">按链上安全、持仓结构与市场数据分批深审</span></div>
+          <button id="screeningRulesButton" class="mini-button" type="button" data-i18n="viewScreeningRules">查看筛选规则</button>
+        </div>
+        <div id="funnelPanel" class="embedded-funnel" aria-labelledby="funnelTitle">
+          <div class="visually-hidden" id="funnelTitle" data-i18n="funnelTitle">筛选漏斗</div>
+          <div id="funnelCounts" class="funnel-groups"></div>
+          <div id="funnelReasons" class="funnel-reasons"></div>
         </div>
         <div class="toolbar" aria-label="候选筛选和排序" data-i18n-aria="toolbarAria">
           <input id="searchInput" class="field" type="search" autocomplete="off" placeholder="搜索代币名称、简称或合约地址" data-i18n-placeholder="searchPlaceholder">
-          <select id="filterSelect" class="field" aria-label="筛选审计状态" data-i18n-aria="filterAria">
-            <option value="all" data-i18n="filterAll">全部审计记录</option>
-            <option value="chain" data-i18n="filterChain">仅链上候选</option>
-            <option value="waiting" data-i18n="filterWaiting">仅等待复查</option>
-            <option value="passed" data-i18n="filterPassed">仅人工通过</option>
-            <option value="ignored" data-i18n="filterIgnored">仅已忽略</option>
-            <option value="rejected" data-i18n="filterRejected">仅已排除</option>
-            <option value="fresh" data-i18n="filterFresh">仅5分钟内审计</option>
-            <option value="favorite" data-i18n="filterFavorite">仅收藏</option>
-          </select>
           <select id="sortSelect" class="field" aria-label="排序方式" data-i18n-aria="sortAria">
             <option value="audit_desc" data-i18n="sortAudit">按审计时间：最新优先</option>
             <option value="score_desc" data-i18n="sortScore">按发现评分：高到低</option>
@@ -951,6 +957,17 @@
     <h3 data-i18n="editNote">编辑备注</h3><p id="noteAddress" class="mono"></p>
     <textarea id="noteInput" maxlength="500" aria-label="Note" data-i18n-aria="editNote"></textarea>
     <div class="manage-actions"><button id="saveNote" class="mini-button" data-i18n="saveNote">保存备注</button><button id="cancelNote" class="mini-button" data-i18n="cancelAction">取消</button></div>
+  </dialog>
+  <dialog id="screeningRulesDialog" class="rules-dialog">
+    <h3 data-i18n="screeningRulesTitle">筛选因子与条件</h3>
+    <p class="why-summary" data-i18n="screeningRulesIntro">软范围可配置并参与自动优化；合约、税率、LP与钱包安全门固定不可放宽。</p>
+    <div id="screeningRulesContent"></div>
+    <div class="manage-actions"><button id="closeScreeningRules" class="mini-button" type="button" data-i18n="closeAction">关闭</button></div>
+  </dialog>
+  <dialog id="candidateWhyDialog" class="rules-dialog">
+    <h3 id="candidateWhyTitle" data-i18n="candidateWhyTitle">为什么得到这个结论</h3>
+    <div id="candidateWhyContent"></div>
+    <div class="manage-actions"><button id="closeCandidateWhy" class="mini-button" type="button" data-i18n="closeAction">关闭</button></div>
   </dialog>
   <dialog id="gmgnOnboardingDialog" class="onboarding-dialog">
     <h3 data-i18n="gmgnOnboardingTitle">创建或更换 GMGN API</h3>
@@ -1168,6 +1185,20 @@
       funnelControls: ['对照','對照','Controls','対照','대조군','ضوابط'],
       funnelRejected: ['硬拒绝','硬拒絕','Hard rejects','ハード拒否','강제 거부','رفض قاطع'],
       funnelNoLoss: ['本轮暂无初筛流失原因','本輪暫無初篩流失原因','No pre-screen loss reason this cycle','今回の一次除外理由なし','이번 1차 탈락 사유 없음','لا أسباب استبعاد أولي'],
+      screeningAuditTitle: ['筛选与深度审计','篩選與深度審計','Screening and deep audit','選別と深度審査','선별 및 심층 감사','الفرز والتدقيق العميق'],
+      viewScreeningRules: ['查看筛选规则','查看篩選規則','View screening rules','選別ルールを見る','선별 규칙 보기','عرض قواعد الفرز'],
+      screeningRulesTitle: ['筛选因子与条件','篩選因子與條件','Screening factors and conditions','選別要因と条件','선별 요인 및 조건','عوامل وشروط الفرز'],
+      screeningRulesIntro: ['软范围可配置并参与自动优化；合约、税率、LP与钱包安全门固定不可放宽。','軟範圍可設定並參與自動優化；合約、稅率、LP與錢包安全門固定不可放寬。','Soft ranges are configurable and tunable; contract, tax, LP and wallet gates stay fixed.','ソフト範囲は調整可能。契約・税・LP・ウォレット安全基準は固定です。','소프트 범위는 조정 가능하며 계약·세금·LP·지갑 안전 기준은 고정입니다.','النطاقات المرنة قابلة للضبط؛ تبقى بوابات العقد والضريبة وLP والمحافظ ثابتة.'],
+      candidateWhyTitle: ['为什么得到这个结论','為什麼得到這個結論','Why this conclusion','この判定の根拠','이 결론의 근거','لماذا صدرت هذه النتيجة'],
+      funnelCurrentScope: ['本轮入口','本輪入口','Current-cycle entry','今回の入口','현재 주기 진입','مدخل الدورة الحالية'],
+      funnelRecentScope: ['近30分钟审计池','近30分鐘審計池','30-minute audit pool','過去30分の審査','최근 30분 감사 풀','مجموعة تدقيق 30 دقيقة'],
+      ruleDiscoveryGroup: ['发现与初筛','發現與初篩','Discovery and pre-screen','発見と一次審査','발견 및 1차 선별','الاكتشاف والفحص الأولي'],
+      ruleSafetyGroup: ['深度安全硬门','深度安全硬門','Deep safety gates','深度安全基準','심층 안전 기준','بوابات الأمان العميقة'],
+      ruleMarketGroup: ['盘面与可卖性','盤面與可賣性','Market tape and sellability','値動きと売却可能性','시장 흐름 및 매도 가능성','السوق وقابلية البيع'],
+      ruleRankingGroup: ['软排序与自动优化','軟排序與自動優化','Soft ranking and auto-tuning','ソフト順位と自動調整','소프트 순위 및 자동 최적화','الترتيب المرن والتحسين الآلي'],
+      rulePass: ['通过','通過','Pass','合格','통과','ناجح'],
+      ruleFail: ['未通过','未通過','Fail','不合格','실패','فشل'],
+      ruleUnknown: ['证据未知','證據未知','Unknown evidence','証拠不明','증거 미확인','دليل غير معروف'],
       factorLabTitle: ['固定周期因子实验室','固定週期因子實驗室','Fixed-horizon factor lab','固定期間ファクターラボ','고정 기간 팩터 실험실','مختبر عوامل الفترات الثابتة'],
       factorLabSubtitle: ['100 USDC影子盘 · 往返固定成本3% + 动态滑点 · 不会真实下单','100 USDC影子盤 · 往返固定成本3% + 動態滑點 · 不會真實下單','100 USDC shadow book · 3% round-trip base cost + dynamic slippage · no real orders','100 USDCシャドー運用・往復固定費3%＋動的スリッページ・実取引なし','100 USDC 섀도우 장부 · 왕복 고정비 3% + 동적 슬리피지 · 실제 주문 없음','محاكاة 100 USDC · تكلفة ثابتة 3٪ وانزلاق ديناميكي · بلا أوامر حقيقية'],
       labCurrent: ['主策略','主策略','Champion','現行戦略','주 전략','الاستراتيجية الرئيسية'],
@@ -1577,6 +1608,7 @@
     let rowsFingerprint = '';
     let factorLabDetailsLoadedAt = 0;
     let factorLabAutoEnabled = true;
+    let auditFilter = 'chain';
 
     function readStorage(key, fallback) {
       try {
@@ -1877,11 +1909,14 @@
       const searchable = [row.symbol, row.name, row.address].join(' ').toLowerCase();
       if (query && !searchable.includes(query)) return false;
       const status = effectiveStatus(row);
-      if (filter === 'chain' && status !== 'chain') return false;
-      if (filter === 'waiting' && status !== 'waiting') return false;
+      const disposition = backendDisposition(row);
+      if (filter === 'chain' && disposition !== 'chain') return false;
+      if (filter === 'waiting' && disposition !== 'waiting') return false;
+      if (filter === 'experimental' && row.experimentEligible !== true) return false;
+      if (filter === 'control' && (disposition !== 'waiting' || row.experimentEligible === true)) return false;
       if (filter === 'passed' && status !== 'passed') return false;
       if (filter === 'ignored' && status !== 'ignored') return false;
-      if (filter === 'rejected' && status !== 'rejected') return false;
+      if (filter === 'rejected' && disposition !== 'rejected') return false;
       if (filter === 'fresh' && candidateAuditAge(row, now) > 5 * 60000) return false;
       if (filter === 'favorite' && !annotationFor(row.chain || activeChain(lastData), row.address).favorite) return false;
       return true;
@@ -2009,6 +2044,7 @@
         '<td class="' + (observation.pass ? 'good' : 'bad') + '">' + (earlyExit ? skipped : escapeHtml(safeMessage(observation.reason, t('marketUnknown'))) + '<br><span class="muted">' + escapeHtml(t('return5m', { value: formatPercent(observation.return5m) })) + '<br>' + escapeHtml(t('maxDrawdown', { value: formatPercent(observation.maxDrawdown) })) + '</span>') + '</td>' +
         '<td><span class="warn">' + escapeHtml(t('manualReview')) + '</span><br><span class="muted">' + escapeHtml(officialStatus) + '</span></td>' +
         '<td>' + statusBadge(row) + '<div class="reasons">' + reasons + '</div><details class="action-menu"><summary>' + escapeHtml(t('actionsColumn')) + '</summary><div class="review-actions">' +
+          '<button type="button" class="mini-button" data-action="why" data-address="' + encodedAddress + '">' + escapeHtml(t('candidateWhyTitle')) + '</button>' +
           '<button type="button" class="mini-button pass ' + (passActive ? 'active' : '') + '" data-action="pass" data-address="' + encodedAddress + '" ' + (canPass ? '' : 'disabled title="' + escapeHtml(passDisabledReason) + '"') + '>' + escapeHtml(passActive ? t('cancelPass') : t('manualPass')) + '</button>' +
           '<button type="button" class="mini-button ignore ' + (ignoreActive ? 'active' : '') + '" data-action="ignore" data-address="' + encodedAddress + '">' + escapeHtml(ignoreActive ? t('cancelIgnore') : t('ignoreAction')) + '</button>' +
           '<button type="button" class="mini-button" data-action="favorite" data-address="' + encodedAddress + '">' + escapeHtml(t(annotationFor(row.chain || activeChain(lastData), row.address).favorite ? 'unfavorite' : 'favorite')) + '</button>' +
@@ -2020,12 +2056,10 @@
     function renderCandidates() {
       const now = Date.now();
       const query = byId('searchInput').value.trim().toLowerCase();
-      const filter = byId('filterSelect').value;
+      const filter = auditFilter;
       const sortValue = byId('sortSelect').value;
       const policy = mergedPolicy(lastData || {});
-      const rows = sortRows(rowsCache.filter(function (row) {
-        return backendDisposition(row) === 'chain' && rowMatches(row, query, filter, now);
-      }), sortValue);
+      const rows = sortRows(rowsCache.filter(function (row) { return rowMatches(row, query, filter, now); }), sortValue);
       const queue = lastData && lastData.auditQueueStats ? lastData.auditQueueStats : {};
       const queueTotal = queue.queued !== undefined ? number(queue.queued) : number(queue.total);
       const queueText = queue.queued !== undefined || queue.total !== undefined || queue.due !== undefined
@@ -2358,18 +2392,112 @@
     function renderFunnel(data) {
       const summary = data.funnelSummary || {};
       const counts = summary.counts || {};
-      const steps = [
-        ['funnelDiscovered','discovered'], ['funnelPrequalified','prequalified'], ['funnelAudited','deepAudited'],
-        ['funnelFormal','formalCandidates'], ['funnelSignals','experimentalSignals'], ['funnelControls','controls'],
-        ['funnelRejected','hardRejects']
-      ];
-      byId('funnelCounts').innerHTML = steps.map(function (step) {
-        return '<div class="funnel-step"><strong>' + escapeHtml(formatCount(number(counts[step[1]]))) + '</strong><span>' + escapeHtml(t(step[0])) + '</span></div>';
-      }).join('');
+      const group = function (title, steps) {
+        return '<div class="funnel-group"><div class="funnel-group-title">' + escapeHtml(t(title)) + '</div><div class="funnel-strip steps-' + steps.length + '">' + steps.map(function (step) {
+          const active = step[2] === auditFilter;
+          return '<button type="button" class="funnel-step ' + (active ? 'active' : '') + '" data-funnel-filter="' + step[2] + '"><strong>'
+            + escapeHtml(formatCount(number(counts[step[1]]))) + '</strong><span>' + escapeHtml(t(step[0])) + '</span></button>';
+        }).join('') + '</div></div>';
+      };
+      byId('funnelCounts').innerHTML = group('funnelCurrentScope', [
+        ['funnelDiscovered','discovered','rules-discovery'], ['funnelPrequalified','prequalified','rules-discovery']
+      ]) + group('funnelRecentScope', [
+        ['funnelAudited','deepAudited','all'], ['funnelFormal','formalCandidates','chain'],
+        ['funnelSignals','experimentalSignals','experimental'], ['funnelControls','controls','control'],
+        ['funnelRejected','hardRejects','rejected']
+      ]);
       const reasons = Array.isArray(summary.lossReasons) ? summary.lossReasons : [];
       byId('funnelReasons').textContent = reasons.length
         ? reasons.map(function (row) { return String(row.reason || '--') + ' × ' + formatCount(number(row.count)); }).join(' · ')
         : t('funnelNoLoss');
+    }
+
+    function ruleLimit(value, formatter) {
+      if (!value || typeof value !== 'object') return '--';
+      const show = formatter || formatCount;
+      if (value.minimum !== undefined && value.maximum !== undefined) return show(value.minimum) + ' – ' + show(value.maximum);
+      if (value.minimum !== undefined) return '≥ ' + show(value.minimum);
+      if (value.maximum !== undefined) return '≤ ' + show(value.maximum);
+      return '--';
+    }
+
+    function ruleGroup(titleKey, rows) {
+      return '<section class="rule-group"><h4>' + escapeHtml(t(titleKey)) + '</h4>' + rows.map(function (row) {
+        return '<div class="rule-row"><span>' + escapeHtml(row[0]) + '</span><span>' + escapeHtml(row[1]) + '</span></div>';
+      }).join('') + '</section>';
+    }
+
+    function renderScreeningRules(data) {
+      const rules = data && data.screeningRules || {};
+      const discovery = rules.discovery || {}, deep = rules.deep || {}, observation = rules.observation || {};
+      const sellability = rules.sellability || {}, ranking = rules.ranking && rules.ranking.weights || {};
+      const percent = function (value) { return formatPercent(value); };
+      byId('screeningRulesContent').innerHTML = '<div class="rule-groups">' +
+        ruleGroup('ruleDiscoveryGroup', [
+          ['市值范围', ruleLimit(discovery.marketCapUsd, formatMoney)],
+          ['优先市值区间', ruleLimit(discovery.priorityMarketCapUsd, formatMoney)],
+          ['初筛流动性', ruleLimit(discovery.liquidityUsd, formatMoney)],
+          ['币龄', ruleLimit(discovery.ageMinutes) + ' 分钟'],
+          ['已知Rug / 捆绑 / 内幕上限', formatPercent(discovery.explicitRiskCaps && discovery.explicitRiskCaps.rugRatio)],
+          ['明确刷量 / EVM貔貅', '直接拒绝']
+        ]) +
+        ruleGroup('ruleSafetyGroup', [
+          ['合约与权限', '源码开源；所有权或铸币/冻结权限已撤销'],
+          ['LP锁定或销毁', ruleLimit(deep.lpLockedRate, percent)],
+          ['深审流动性', ruleLimit(deep.liquidityUsd, formatMoney)],
+          ['买税 / 卖税 / 税差', ruleLimit(deep.buyTaxRate, percent) + ' / ' + ruleLimit(deep.sellTaxRate, percent) + ' / ' + ruleLimit(deep.taxAsymmetryRate, percent)],
+          ['Rug / Top10 / 开发者', ruleLimit(deep.rugRatio, percent) + ' / ' + ruleLimit(deep.top10HoldRate, percent) + ' / ' + ruleLimit(deep.developerHoldRate, percent)],
+          ['内幕 / 捆绑 / 狙击', ruleLimit(deep.insiderRate, percent) + ' / ' + ruleLimit(deep.bundlerRate, percent) + ' / ' + ruleLimit(deep.sniperHoldRate, percent)],
+          ['机器人 / 关联钱包', ruleLimit(deep.botHoldRate, percent) + ' / ' + ruleLimit(deep.linkedHoldRate, percent)],
+          ['普通钱包代理', ruleLimit(deep.ordinaryWallets)]
+        ]) +
+        ruleGroup('ruleMarketGroup', [
+          ['完整1分钟K线', ruleLimit(observation.closedMinuteBars)],
+          ['行情最大延迟', ruleLimit(observation.stalenessMinutes) + ' 分钟'],
+          ['5分钟涨跌', ruleLimit(observation.return5m, percent)],
+          ['最大回撤 / 单根量能集中', ruleLimit(observation.drawdown, percent) + ' / ' + ruleLimit(observation.volumeConcentration, percent)],
+          ['有成交分钟', ruleLimit(observation.activeBars)],
+          ['卖出证据：5m / 24h / 近期独立卖家', ruleLimit(sellability.sells5m) + ' / ' + ruleLimit(sellability.sells24h) + ' / ' + ruleLimit(sellability.distinctRecentSellers)]
+        ]) +
+        ruleGroup('ruleRankingGroup', [
+          ['优先区间 / 普通区间', formatCount(ranking.priorityBand) + ' / ' + formatCount(ranking.ordinaryBand)],
+          ['流动性 / 成交量 / 持有人上限分', formatCount(ranking.liquidityCap) + ' / ' + formatCount(ranking.volumeCap) + ' / ' + formatCount(ranking.holdersCap)],
+          ['2个 / 3个聪明钱加分', formatCount(ranking.smartTwo) + ' / ' + formatCount(ranking.smartThree)],
+          ['仅KOL惩罚', '-' + formatCount(ranking.kolPenalty)],
+          ['自动优化边界', '每次仅改变一个软条件或权重 ±10%；安全门与退出规则不变']
+        ]) + '</div>';
+    }
+
+    function openCandidateWhy(address) {
+      const row = rowsCache.find(function (item) { return addressIdentity(item.address) === addressIdentity(address); });
+      if (!row) return;
+      const deep = row.deep || {}, checks = deep.checks || {}, unknown = new Set(deep.blockingUnknownFields || deep.unknownFields || []);
+      const security = deep.security || {}, wallets = deep.wallets || {}, observation = deep.observation || {};
+      const rules = lastData && lastData.screeningRules || {}, discoveryRules = rules.discovery || {}, deepRules = rules.deep || {};
+      const state = function (key) {
+        if ([...unknown].some(function (field) { return field === key || field.startsWith(key + '.'); })) return t('ruleUnknown');
+        return checks[key] === true ? t('rulePass') : t('ruleFail');
+      };
+      const result = function (actual, condition, key) { return actual + ' · 条件 ' + condition + ' · ' + state(key); };
+      const rows = [
+        ['市值', formatMoney(row.marketCap) + ' · 发现范围 ' + ruleLimit(discoveryRules.marketCapUsd, formatMoney)],
+        ['币龄', formatCount(number(row.ageSec) / 60) + '分钟 · 范围 ' + ruleLimit(discoveryRules.ageMinutes)],
+        ['源码开源', result(security.openSource === true ? '是' : security.openSource === false ? '否' : '--', '必须开源', 'openSource')],
+        ['权限撤销', result(security.ownerRenounced === true ? '是' : security.ownerRenounced === false ? '否' : '--', '必须撤销', 'ownerRenounced')],
+        ['LP锁定', result(security.lpBurned ? '已销毁' : formatPercent(security.lockRate), ruleLimit(deepRules.lpLockedRate, formatPercent), 'lpLocked')],
+        ['非貔貅/可卖', result(deep.honeypotEvidence || '--', '明确非貔貅或有充分卖出证据', 'notHoneypot')],
+        ['买税 / 卖税', result(formatPercent(security.buyTax) + ' / ' + formatPercent(security.sellTax), ruleLimit(deepRules.buyTaxRate, formatPercent) + ' / ' + ruleLimit(deepRules.sellTaxRate, formatPercent), 'tax')],
+        ['Rug / Top10', result(formatPercent(security.rugRatio) + ' / ' + formatPercent(security.top10), ruleLimit(deepRules.rugRatio, formatPercent) + ' / ' + ruleLimit(deepRules.top10HoldRate, formatPercent), checks.rug && checks.concentration ? 'rug' : checks.rug ? 'concentration' : 'rug')],
+        ['内幕 / 捆绑 / 狙击', result(formatPercent(security.insider) + ' / ' + formatPercent(security.bundler) + ' / ' + formatPercent(security.sniperHold), ruleLimit(deepRules.insiderRate, formatPercent) + ' / ' + ruleLimit(deepRules.bundlerRate, formatPercent) + ' / ' + ruleLimit(deepRules.sniperHoldRate, formatPercent), checks.insider && checks.bundler ? 'sniper' : checks.insider ? 'bundler' : 'insider')],
+        ['普通钱包 / 机器人 / 关联', result(formatCount(wallets.ordinaryCount) + ' / ' + formatPercent(wallets.botHoldRate) + ' / ' + formatPercent(wallets.linkedHoldRate), ruleLimit(deepRules.ordinaryWallets) + ' / ' + ruleLimit(deepRules.botHoldRate, formatPercent) + ' / ' + ruleLimit(deepRules.linkedHoldRate, formatPercent), 'wallets')],
+        ['深审流动性', result(formatMoney(security.liquidity), ruleLimit(deepRules.liquidityUsd, formatMoney), 'liquidity')],
+        ['5分钟盘面', result(formatSignedPercent(observation.return5m) + '；回撤 ' + formatPercent(observation.maxDrawdown), observation.reason || '--', 'observation')]
+      ];
+      byId('candidateWhyTitle').textContent = (row.symbol || row.address || '?') + ' · ' + t('candidateWhyTitle');
+      byId('candidateWhyContent').innerHTML = '<p class="why-summary">' + escapeHtml(failureReasons(row, mergedPolicy(lastData || {})).join(' · ')) + '</p>'
+        + ruleGroup('ruleSafetyGroup', rows)
+        + (unknown.size ? '<p class="why-summary">未知字段：' + escapeHtml([...unknown].join('、')) + '</p>' : '');
+      byId('candidateWhyDialog').showModal();
     }
 
     function renderFactorLabSummary(data) {
@@ -2564,6 +2692,7 @@
       renderOutcomes(data);
       renderResultDashboard(data);
       renderFunnel(data);
+      renderScreeningRules(data);
       renderFactorLabSummary(data);
       renderChainSwitcher(data);
       renderGmgnConnection(data);
@@ -2850,8 +2979,26 @@
       } catch { showToast(t('settingsFailed')); }
       finally { liveFingerprint = ''; renderLive(); }
     });
-    byId('filterSelect').addEventListener('change', renderCandidates);
     byId('sortSelect').addEventListener('change', renderCandidates);
+    byId('funnelCounts').addEventListener('click', function (event) {
+      const button = event.target.closest('[data-funnel-filter]');
+      if (!button) return;
+      const filter = button.dataset.funnelFilter;
+      if (filter === 'rules-discovery') {
+        renderScreeningRules(lastData || {});
+        byId('screeningRulesDialog').showModal();
+        return;
+      }
+      auditFilter = filter;
+      renderFunnel(lastData || {});
+      renderCandidates();
+    });
+    byId('screeningRulesButton').addEventListener('click', function () {
+      renderScreeningRules(lastData || {});
+      byId('screeningRulesDialog').showModal();
+    });
+    byId('closeScreeningRules').addEventListener('click', function () { byId('screeningRulesDialog').close(); });
+    byId('closeCandidateWhy').addEventListener('click', function () { byId('candidateWhyDialog').close(); });
     byId('gmgnKeyForm').addEventListener('submit', connectGmgnApi);
     byId('gmgnOnboardingButton').addEventListener('click', function () {
       byId('gmgnOnboardingDialog').showModal();
@@ -2981,6 +3128,7 @@
       if (!button || button.disabled) return;
       const address = decodeURIComponent(button.getAttribute('data-address') || '');
       if (button.dataset.action === 'copy') copyText(address);
+      else if (button.dataset.action === 'why') openCandidateWhy(address);
       else if (button.dataset.action === 'pass') updateManualMark(address, 'passed');
       else if (button.dataset.action === 'ignore') updateManualMark(address, 'ignored');
       else if (button.dataset.action === 'note') openNote(activeChain(lastData), address);
