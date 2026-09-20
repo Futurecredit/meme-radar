@@ -49,6 +49,30 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function safePublicUrl(value, { gmgnOnly = false } = {}) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return '';
+    if (gmgnOnly && !['gmgn.ai', 'www.gmgn.ai'].includes(parsed.hostname.toLowerCase())) return '';
+    return parsed.href;
+  } catch { return ''; }
+}
+
+function safeTwitterHandle(value) {
+  let handle = String(value || '').trim();
+  handle = handle.replace(/^(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\//i, '').replace(/^@/, '');
+  if (handle.includes('/')) handle = handle.split('/')[0];
+  return /^[A-Za-z0-9_]{1,15}$/.test(handle) ? handle : '';
+}
+
+function publicLinkSnapshot(candidate = {}) {
+  return {
+    twitter: safeTwitterHandle(candidate.social?.twitter || candidate.info?.twitter || candidate.twitter),
+    website: safePublicUrl(candidate.info?.website || candidate.website),
+    gmgnUrl: safePublicUrl(candidate.gmgnUrl, { gmgnOnly: true })
+  };
+}
+
 export function defaultSoftStrategy(policy) {
   const discovery = Object.fromEntries(SOFT_DISCOVERY_KEYS.map(key => [key, policy.discovery[key]]));
   return Object.freeze({
@@ -249,6 +273,7 @@ export function createShadowTrade(candidate, { cohort, signalAt = Date.now(), po
     chain: String(candidate.chain || ''),
     address: normalizedAddress,
     symbol: String(candidate.symbol || '?').slice(0, 30),
+    ...publicLinkSnapshot(candidate),
     cohort,
     evidenceTier: cohort === 'signal' ? String(candidate.evidenceTier || (candidate.status === 'X_REVIEW' ? 'formal' : 'incomplete')) : 'reference',
     notionalUsdc: cohort === 'signal' ? SHADOW_NOTIONAL_USDC : 0,
@@ -567,9 +592,11 @@ function publicSample(sample) {
 
 function publicTrade(trade) {
   const factors = trade.factors || {};
+  const links = publicLinkSnapshot(trade);
   return {
     id: String(trade.id || '').slice(0, 64), chain: String(trade.chain || '').slice(0, 32),
     address: String(trade.address || '').slice(0, 128), symbol: String(trade.symbol || '?').slice(0, 30),
+    ...links,
     cohort: String(trade.cohort || '').slice(0, 24), exploration: trade.exploration === true,
     evidenceTier: String(trade.evidenceTier || '').slice(0, 24), notionalUsdc: finite(trade.notionalUsdc),
     signalAt: finite(trade.signalAt), strategyVersion: String(trade.strategyVersion || '').slice(0, 64),
@@ -910,6 +937,8 @@ export class FactorLab {
     const duplicate = this.state.trades.find(trade => tokenKey(trade.chain, trade.address) === key
       && trade.cohort === cohort && trade.strategyVersion === currentVersion);
     if (duplicate) {
+      const links = publicLinkSnapshot(candidate);
+      for (const field of ['twitter', 'website', 'gmgnUrl']) if (!duplicate[field] && links[field]) duplicate[field] = links[field];
       duplicate.latestDecision = candidate.status;
       duplicate.lastAuditedAt = now;
       this.save();

@@ -56,6 +56,33 @@ test('shadow trade enters on first completed minute and applies 3% plus liquidit
   assert.ok(Math.abs(trade.samples.m5.dynamicCostRate - 0.0396) < 1e-9);
 });
 
+test('shadow signal freezes safe public links and duplicate audits only fill missing metadata', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-links-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    const trade = lab.recordCandidate(candidate({
+      social: { twitter: '' }, info: { website: '' }, gmgnUrl: ''
+    }), { now: 1 });
+    assert.equal(trade.twitter, '');
+
+    const duplicate = lab.recordCandidate(candidate({
+      social: { twitter: '@dog_coin' },
+      info: { website: 'https://dog.example/path' },
+      gmgnUrl: 'https://gmgn.ai/sol/token/11111111111111111111111111111111'
+    }), { now: 2 });
+    assert.equal(duplicate.id, trade.id);
+    const row = lab.query({ view: 'positions', limit: '10' }).rows[0];
+    assert.deepEqual({ twitter: row.twitter, website: row.website, gmgnUrl: row.gmgnUrl }, {
+      twitter: 'dog_coin',
+      website: 'https://dog.example/path',
+      gmgnUrl: 'https://gmgn.ai/sol/token/11111111111111111111111111111111'
+    });
+
+    lab.recordCandidate(candidate({ social: { twitter: '@replacement' } }), { now: 3 });
+    assert.equal(lab.query({ view: 'positions', limit: '10' }).rows[0].twitter, 'dog_coin');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('late or missing prices are never backfilled and confirmed untradeable is conservative -100%', () => {
   const trade = createShadowTrade(candidate(), { cohort: 'signal', signalAt: 1, policy, strategy: defaultSoftStrategy(policy) });
   applyPriceSample(trade, { kind: 'entry', targetAt: 60_000 }, { at: 60_000, price: 1 });

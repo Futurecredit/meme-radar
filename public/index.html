@@ -691,6 +691,14 @@
     .result-runtime { border-top: 1px solid var(--line-soft); box-shadow: inset 0 1px #071014; }
     .result-runtime .telemetry-item { min-height: 74px; padding: 10px 14px; }
     .result-runtime .telemetry-item label { margin-bottom: 4px; }
+    .shadow-ledger { border-top: 1px solid var(--line); padding: 0 16px 16px; }
+    .shadow-ledger-head { display: flex; justify-content: space-between; align-items: end; gap: 12px; padding: 13px 0 9px; }
+    .shadow-ledger-head h3 { margin: 0; }
+    .shadow-ledger-summary { color: var(--muted); text-align: right; }
+    .shadow-ledger .compact-table td { vertical-align: top; }
+    .shadow-ledger .links { min-width: 190px; }
+    .cashflow-details summary { color: var(--cyan); cursor: pointer; white-space: nowrap; }
+    .cashflow-line { padding: 4px 0; border-top: 1px solid var(--line-soft); white-space: nowrap; }
     .embedded-funnel { border-bottom: 1px solid var(--line-soft); background: #08121688; }
     .funnel-groups { display: grid; grid-template-columns: 2fr 5fr; gap: 1px; background: var(--line-soft); }
     .funnel-group { background: #0b151a; }
@@ -799,6 +807,10 @@
         <div class="telemetry-item"><label data-i18n="nextScanLabel">下轮扫描</label><strong id="nextScan">--</strong><small id="scanProgress" data-i18n="waitingSchedule">等待调度</small></div>
         <div class="telemetry-item"><label data-i18n="freshnessLabel">数据新鲜度</label><strong id="freshnessState" data-i18n="waitingData">等待数据</strong><small id="freshnessDetail" data-i18n="notJudged">尚未判断</small></div>
       </div>
+      <div class="shadow-ledger">
+        <div class="shadow-ledger-head"><div><h3 data-i18n="shadowLedgerTitle">影子交易持仓</h3><span data-i18n="shadowLedgerSubtitle">全链真实模拟买卖记录 · 不包含待入场信号</span></div><div id="shadowLedgerSummary" class="shadow-ledger-summary">正在读取仓位</div></div>
+        <div id="shadowLedgerPositions" class="table compact-table-wrap"></div>
+      </div>
     </section>
 
     <section id="livePanel" class="panel live-panel" aria-labelledby="liveTitle">
@@ -904,9 +916,6 @@
           <summary data-i18n="factorDetails">因子质量、影子流水与策略历史</summary>
           <h3 data-i18n="factorRanking">因子质量榜</h3>
           <div id="factorLabFactors" class="table compact-table-wrap"></div>
-          <h3 data-i18n="positionLedger">真实模拟仓位</h3>
-          <div id="factorLabPendingSignals" class="muted"></div>
-          <div id="factorLabPositions" class="table compact-table-wrap"></div>
           <h3 data-i18n="referenceSamples">参考样本 · 未投入模拟本金</h3>
           <div id="factorLabSamples" class="table compact-table-wrap"></div>
           <h3 data-i18n="stageReports">阶段报告</h3>
@@ -1218,6 +1227,12 @@
       factorRanking: ['因子质量榜','因子品質榜','Factor quality','因子品質','팩터 품질','جودة العوامل'],
       shadowLedger: ['影子交易流水','影子交易流水','Shadow ledger','シャドー取引記録','섀도우 거래 내역','سجل المحاكاة'],
       positionLedger: ['真实模拟仓位','真實模擬倉位','Funded shadow positions','資金配分済み模擬ポジション','모의 자금 포지션','مراكز المحاكاة الممولة'],
+      shadowLedgerTitle: ['影子交易持仓','影子交易持倉','Shadow trade ledger','シャドー取引台帳','섀도 거래 원장','سجل التداول التجريبي'],
+      shadowLedgerSubtitle: ['全链真实模拟买卖记录 · 不包含待入场信号','全鏈真實模擬買賣記錄 · 不包含待入場信號','All-chain funded simulations · pending entries excluded','全チェーンの資金配分済み模擬売買・待機中を除外','전체 체인 자금 배정 모의 거래 · 진입 대기 제외','محاكاة ممولة عبر جميع الشبكات · دون إشارات الانتظار'],
+      shadowLedgerLoading: ['正在读取仓位','正在讀取倉位','Loading positions','ポジション読込中','포지션 불러오는 중','جارٍ تحميل المراكز'],
+      shadowLedgerEmpty: ['尚无已入场影子仓位','尚無已入場影子倉位','No funded shadow entries yet','資金配分済みポジションなし','진입 완료된 모의 포지션 없음','لا توجد مراكز ممولة بعد'],
+      shadowLedgerFailed: ['仓位读取失败，保留上次结果','倉位讀取失敗，保留上次結果','Position refresh failed; keeping last result','更新失敗・前回結果を保持','포지션 새로고침 실패 · 이전 결과 유지','فشل التحديث؛ تم الاحتفاظ بالنتيجة السابقة'],
+      noOfficialX: ['未获取官方X','未取得官方X','Official X unavailable','公式X未取得','공식 X 미확인','حساب X الرسمي غير متاح'],
       referenceSamples: ['参考样本 · 未投入模拟本金','參考樣本 · 未投入模擬本金','Reference samples · no capital allocated','参照サンプル・模擬元本なし','참조 표본 · 모의 원금 없음','عينات مرجعية · بلا رأس مال'],
       stageReports: ['阶段报告','階段報告','Stage reports','段階レポート','단계 보고서','تقارير مرحلية'],
       strategyHistory: ['策略历史','策略歷史','Strategy history','戦略履歴','전략 기록','تاريخ الاستراتيجية'],
@@ -1520,6 +1535,11 @@
       const parsed = Number(value);
       return (parsed > 0 ? '+' : '') + new Intl.NumberFormat(currentLocale, { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(parsed);
     };
+    const formatSignedMoney = function (value) {
+      if (!hasFiniteValue(value)) return t('none');
+      const parsed = Number(value);
+      return (parsed > 0 ? '+' : '') + formatMoney(parsed);
+    };
     const formatClock = function (value) {
       return value ? new Date(value).toLocaleString(currentLocale, { hour12: false }) : '--';
     };
@@ -1609,6 +1629,9 @@
     let factorLabDetailsLoadedAt = 0;
     let factorLabAutoEnabled = true;
     let auditFilter = 'chain';
+    let shadowLedgerRows = [];
+    let shadowLedgerLoadedAt = 0;
+    let shadowLedgerBusy = false;
 
     function readStorage(key, fallback) {
       try {
@@ -1982,6 +2005,7 @@
       result += '<button class="mini-button" type="button" data-action="copy" data-address="' + encodedData + '">' + escapeHtml(t('copyContract')) + '</button>';
       result += '<a href="' + escapeHtml(gmgnUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('gmgnDetails')) + '</a>';
       if (officialX) result += '<a href="' + escapeHtml(officialX) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('officialX')) + '</a>';
+      else result += '<span class="missing-link">' + escapeHtml(t('noOfficialX')) + '</span>';
       result += '<a href="' + escapeHtml(searchX) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('liveXSearch')) + '</a>';
       if (website) result += '<a href="' + escapeHtml(website) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('visitWebsite')) + '</a>';
       else result += '<span class="missing-link">' + escapeHtml(t('noWebsite')) + '</span>';
@@ -2523,6 +2547,78 @@
       }).join('');
     }
 
+    function positionEntry(row) {
+      const cashflows = Array.isArray(row.cashflows) ? row.cashflows : [];
+      return cashflows.find(function (cashflow) { return cashflow.kind === 'ENTRY'; }) || row.entry || {};
+    }
+
+    function positionExitCashflows(row) {
+      return (Array.isArray(row.cashflows) ? row.cashflows : []).filter(function (cashflow) { return cashflow.kind !== 'ENTRY'; })
+        .sort(function (a, b) { return number(a.at) - number(b.at); });
+    }
+
+    function formatTokenPrice(value) {
+      const price = Number(value);
+      if (!(price > 0)) return '--';
+      return price >= 0.01 ? price.toLocaleString(currentLocale, { maximumFractionDigits: 8 }) : price.toExponential(6);
+    }
+
+    function cashflowLabel(kind) {
+      return ({ ENTRY: '模拟买入', STOP_LOSS: '止损', PRINCIPAL_RECOVERY: '翻倍跑本', TRAILING_DRAWDOWN: '回撤退出', TIMEOUT: '24小时退出', SAFETY_EXIT: '安全退出' })[kind] || String(kind || '--');
+    }
+
+    function renderShadowLedger(rows) {
+      const allRows = Array.isArray(rows) ? rows : [];
+      const funded = allRows.filter(function (row) { return Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0; });
+      const pending = allRows.filter(function (row) { return !(Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0); }).length;
+      const open = funded.filter(function (row) { return row.status === 'OPEN' || row.status === 'RUNNER'; }).length;
+      const realized = funded.reduce(function (sum, row) { return sum + number(row.realizedNetUsdc); }, 0);
+      byId('shadowLedgerSummary').textContent = funded.length
+        ? '已入场 ' + formatCount(funded.length) + ' · 持仓 ' + formatCount(open) + ' · 已平仓 ' + formatCount(funded.length - open) + ' · 净结果 ' + formatMoney(realized) + ' · 待入场 ' + formatCount(pending)
+        : t('shadowLedgerEmpty') + (pending ? ' · 待入场 ' + formatCount(pending) : '');
+      byId('shadowLedgerPositions').innerHTML = factorLabTable(
+        ['代币 / 链','状态','模拟投入','买入时间 / 价格','卖出时间 / 价格','回收 / 净盈亏','退出原因','研究入口 / 现金流'], funded,
+        function (row) {
+          const entry = positionEntry(row), exits = positionExitCashflows(row);
+          const exitLines = exits.length ? exits.map(function (cashflow) {
+            return escapeHtml(formatClock(cashflow.at)) + '<br><span class="mono">' + escapeHtml(formatTokenPrice(cashflow.price)) + '</span>';
+          }).join('<hr>') : '<span class="muted">尚未卖出</span>';
+          const cashflowLines = (Array.isArray(row.cashflows) ? row.cashflows : []).map(function (cashflow) {
+            return '<div class="cashflow-line">' + escapeHtml(formatClock(cashflow.at)) + ' · ' + escapeHtml(cashflowLabel(cashflow.kind))
+              + ' · ' + escapeHtml(formatTokenPrice(cashflow.price)) + ' · ' + escapeHtml(formatMoney(number(cashflow.netUsdc))) + '</div>';
+          }).join('');
+          const links = actionLinks({ address: row.address, chain: row.chain, symbol: row.symbol, gmgnUrl: row.gmgnUrl, info: { website: row.website, twitter: row.twitter } })
+            .replace('data-action="copy"', 'data-shadow-copy');
+          const pnl = number(row.realizedNetUsdc), pnlTone = pnl > 0 ? 'good' : pnl < 0 ? 'bad' : '';
+          return [
+            '<strong>' + escapeHtml(row.symbol || '?') + '</strong><br><span class="muted">' + escapeHtml(row.chain || '--') + '</span>',
+            escapeHtml(row.status === 'CLOSED' ? '已平仓' : row.status === 'RUNNER' ? '已跑本持有' : '持仓中'),
+            escapeHtml(formatMoney(number(row.allocatedUsdc))),
+            escapeHtml(formatClock(entry.at)) + '<br><span class="mono">' + escapeHtml(formatTokenPrice(entry.price)) + '</span>',
+            exitLines,
+            escapeHtml(formatMoney(number(row.recoveredUsdc))) + '<br><strong class="' + pnlTone + '">' + escapeHtml(formatSignedMoney(pnl)) + '</strong>',
+            escapeHtml(cashflowLabel(row.exitReason || (row.status === 'RUNNER' ? 'PRINCIPAL_RECOVERY' : ''))),
+            links + '<details class="cashflow-details"><summary>现金流 ' + formatCount((row.cashflows || []).length) + ' 笔</summary>' + cashflowLines + '</details>'
+          ];
+        }
+      );
+    }
+
+    async function loadShadowLedger(force) {
+      if (shadowLedgerBusy || !force && Date.now() - shadowLedgerLoadedAt < 15000) return;
+      shadowLedgerBusy = true;
+      try {
+        const response = await fetch('/api/factor-lab?view=positions&limit=100', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+        if (!response.ok) throw new Error('shadow_ledger_failed');
+        const result = await response.json();
+        shadowLedgerRows = Array.isArray(result.rows) ? result.rows : [];
+        shadowLedgerLoadedAt = Date.now();
+        renderShadowLedger(shadowLedgerRows);
+      } catch {
+        byId('shadowLedgerSummary').textContent = t('shadowLedgerFailed');
+      } finally { shadowLedgerBusy = false; }
+    }
+
     function factorLabTable(headers, rows, cells) {
       return '<table class="compact-table factor-detail-table"><thead><tr>'
         + headers.map(function (header) { return '<th>' + escapeHtml(header) + '</th>'; }).join('')
@@ -2540,24 +2636,17 @@
       try {
         const responses = await Promise.all([
           fetch('/api/factor-lab?view=factors&limit=100', { signal: AbortSignal.timeout(10000) }),
-          fetch('/api/factor-lab?view=positions&limit=50&chain=' + encodeURIComponent(chain), { signal: AbortSignal.timeout(10000) }),
           fetch('/api/factor-lab?view=samples&limit=50&chain=' + encodeURIComponent(chain), { signal: AbortSignal.timeout(10000) }),
           fetch('/api/factor-lab?view=reports&limit=50', { signal: AbortSignal.timeout(10000) }),
           fetch('/api/factor-lab?view=history&limit=50', { signal: AbortSignal.timeout(10000) })
         ]);
         if (responses.some(function (response) { return !response.ok; })) throw new Error('factor_lab_failed');
         const results = await Promise.all(responses.map(function (response) { return response.json(); }));
-        const factors = results[0].rows || [], positions = results[1].rows || [], samples = results[2].rows || [];
-        const reports = results[3].rows || [], history = results[4].rows || [];
+        const factors = results[0].rows || [], samples = results[1].rows || [];
+        const reports = results[2].rows || [], history = results[3].rows || [];
         byId('factorLabFactors').innerHTML = factorLabTable(
           ['因子','区间','样本','净收益中位数','盈利率','P10','匹配收益差','追高率'], factors,
           function (row) { return [escapeHtml(row.factor), escapeHtml(row.bucket), escapeHtml(formatCount(row.sampleCount)), escapeHtml(formatSignedPercent(row.medianNetReturn)), escapeHtml(formatSignedPercent(row.hitRate)), escapeHtml(formatSignedPercent(row.p10)), escapeHtml(formatSignedPercent(row.matchedUplift)), escapeHtml(formatSignedPercent(row.chaseRate))]; }
-        );
-        const fundedPositions = positions.filter(function (row) { return Number(row.allocatedUsdc) > 0; });
-        byId('factorLabPendingSignals').textContent = '待入场实验信号 ' + formatCount(positions.length - fundedPositions.length) + ' 笔 · 尚未投入模拟本金';
-        byId('factorLabPositions').innerHTML = factorLabTable(
-          ['时间','代币','链','证据','入场价','止损线','跑本目标','已回收','剩余数量','状态/退出'], fundedPositions,
-          function (row) { return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.evidenceTier === 'formal' ? '正式' : '证据不全实验'), escapeHtml(String(row.entry.price)), 'US$70', 'US$200', escapeHtml(formatMoney(number(row.recoveredUsdc))), escapeHtml(String(number(row.remainingUnits))), escapeHtml(row.exitReason || row.status || '--')]; }
         );
         byId('factorLabSamples').innerHTML = factorLabTable(
           ['时间','代币','链','分组','资金','10m净收益','策略'], samples,
@@ -2573,7 +2662,7 @@
         );
       } catch {
         factorLabDetailsLoadedAt = 0;
-        ['factorLabFactors','factorLabPositions','factorLabSamples','factorLabReports','factorLabHistory'].forEach(function (id) { byId(id).innerHTML = '<div class="empty">' + escapeHtml(t('settingsFailed')) + '</div>'; });
+        ['factorLabFactors','factorLabSamples','factorLabReports','factorLabHistory'].forEach(function (id) { byId(id).innerHTML = '<div class="empty">' + escapeHtml(t('settingsFailed')) + '</div>'; });
       }
     }
 
@@ -2691,6 +2780,8 @@
       renderEvents(data);
       renderOutcomes(data);
       renderResultDashboard(data);
+      renderShadowLedger(shadowLedgerRows);
+      loadShadowLedger(false);
       renderFunnel(data);
       renderScreeningRules(data);
       renderFactorLabSummary(data);
@@ -3022,6 +3113,10 @@
       if (error) error.textContent = '';
     });
     byId('factorLabDetails').addEventListener('toggle', function () { if (this.open) loadFactorLabViews(true); });
+    byId('shadowLedgerPositions').addEventListener('click', function (event) {
+      const button = event.target.closest('[data-shadow-copy]');
+      if (button) copyText(decodeURIComponent(button.getAttribute('data-address') || ''));
+    });
     byId('factorLabPause').addEventListener('click', async function () {
       try {
         const result = await postLocal('/api/factor-lab-control', { autoPromotionEnabled: !factorLabAutoEnabled });

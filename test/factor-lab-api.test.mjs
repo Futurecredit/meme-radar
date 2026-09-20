@@ -30,6 +30,7 @@ test('factor lab API paginates allowlisted views and protects control writes', a
   lab.state.trades.push({
     id: 'trade-1', chain: 'bsc', address: '0x0000000000000000000000000000000000000001', symbol: 'DOG',
     cohort: 'signal', signalAt: 100, strategyVersion: 'v1', chaseRisk: false,
+    twitter: 'dog_coin', website: 'https://dog.example', gmgnUrl: 'https://gmgn.ai/bsc/token/0x0000000000000000000000000000000000000001',
     factors: { marketCap: 40_000, liquidity: 10_000, secret: 'do-not-leak' },
     entry: { at: 200, price: 1, targetAt: 200 }, samples: { m5: { netReturn: .1, conservativeReturn: .1, privateKey: 'do-not-leak' } },
     status: 'OPEN', allocatedUsdc: 100, recoveredUsdc: 0, remainingUnits: 90,
@@ -62,6 +63,9 @@ test('factor lab API paginates allowlisted views and protects control writes', a
   assert.equal(positions.body.rows.length, 1);
   assert.equal(positions.body.rows[0].allocatedUsdc, 100);
   assert.equal(positions.body.rows[0].cashflows[0].kind, 'ENTRY');
+  assert.equal(positions.body.rows[0].twitter, 'dog_coin');
+  assert.equal(positions.body.rows[0].website, 'https://dog.example/');
+  assert.match(positions.body.rows[0].gmgnUrl, /^https:\/\/gmgn\.ai\//);
   const samples = await dispatch(server, 'GET', '/api/factor-lab?view=samples&chain=bsc&limit=10');
   assert.equal(samples.status, 200);
   assert.equal(samples.body.rows.length, 1);

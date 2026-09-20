@@ -269,8 +269,7 @@ test('固定周期因子实验室使用紧凑表格并按需加载明细', () =>
   const start = html.indexOf('id="factorLabPanel"');
   const end = html.indexOf('<article class="panel wide">', start + 30);
   assert.doesNotMatch(html.slice(start, end), /class="card/);
-  assert.match(html, /const fundedPositions = positions\.filter/);
-  assert.match(html, /String\(row\.entry\.price\)/);
+  assert.doesNotMatch(html.slice(start, end), /id="shadowLedgerPositions"/);
 });
 
 test('首页融合结果与运行状态、筛选漏斗与深审表格', () => {
@@ -319,18 +318,30 @@ test('审计阶段标签可筛选全部深审状态且逐币可查看判定依�
 });
 
 test('实验室分离真实仓位、未投入本金参考样本和阶段报告', () => {
-  for (const id of ['factorLabPositions', 'factorLabSamples', 'factorLabReports']) {
+  for (const id of ['shadowLedgerPositions', 'factorLabSamples', 'factorLabReports']) {
     assert.match(html, new RegExp('id="' + id + '"'));
   }
   assert.match(html, /view=positions/);
   assert.match(html, /view=samples/);
   assert.match(html, /view=reports/);
   assert.match(html, /未投入模拟本金/);
-  assert.match(html, /止损线/);
-  assert.match(html, /跑本目标/);
-  assert.match(html, /row\.evidenceTier/);
   assert.match(html, /待入场/);
-  assert.match(html, /const fundedPositions = positions\.filter/);
-  assert.match(html, /'状态\/退出'\], fundedPositions/);
-  assert.match(html, /尚未投入模拟本金/);
+  assert.match(html, /function renderShadowLedger\(/);
+  assert.match(html, /Number\(row\.allocatedUsdc\) > 0/);
+});
+
+test('真实影子仓位常驻结果总览并展示全链买卖时间价格、现金流和研究入口', () => {
+  const dashboardStart = html.indexOf('id="resultDashboard"');
+  const dashboardEnd = html.indexOf('</section>', dashboardStart);
+  const dashboard = html.slice(dashboardStart, dashboardEnd);
+  assert.match(dashboard, /id="shadowLedgerPositions"/);
+  assert.match(dashboard, /id="shadowLedgerSummary"/);
+  assert.match(html, /\/api\/factor-lab\?view=positions&limit=100/);
+  assert.doesNotMatch(html, /view=positions&limit=100&chain=/);
+  assert.match(html, /function positionEntry\(/);
+  assert.match(html, /function positionExitCashflows\(/);
+  assert.match(html, /function renderShadowLedger\(/);
+  assert.match(html, /PRINCIPAL_RECOVERY/);
+  assert.match(html, /data-shadow-copy/);
+  assert.match(html, /actionLinks\(\{ address: row\.address, chain: row\.chain, symbol: row\.symbol, gmgnUrl: row\.gmgnUrl, info: \{ website: row\.website, twitter: row\.twitter \} \}\)/);
 });
