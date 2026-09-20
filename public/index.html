@@ -668,6 +668,40 @@
     .policy-field input[aria-invalid="true"] { border-color: var(--red); }
     .policy-field small { min-height: 18px; color: var(--muted); }
     .policy-field .field-error { color: var(--red); }
+    .shell { display: flex; flex-direction: column; }
+    .grid { display: contents; }
+    #resultDashboard { order: 3; }
+    #formalCandidatesPanel { order: 4; }
+    #funnelPanel { order: 5; }
+    #livePanel { order: 6; }
+    #factorLabPanel { order: 7; }
+    #managePanel { order: 8; }
+    #runtimePanel { order: 9; }
+    #legacyOutcomePanel, #eventsPanel { order: 10; }
+    .footer { order: 11; }
+    .legacy-metric, .metric { display: none; }
+    .result-dashboard, .funnel-panel { margin: 0 0 16px; }
+    .result-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-top: 1px solid var(--line-soft); }
+    .result-metric { padding: 13px 14px; border-right: 1px solid var(--line-soft); }
+    .result-metric:last-child { border-right: 0; }
+    .result-metric span, .result-metric small { display: block; color: var(--muted); }
+    .result-metric strong { display: block; margin: 4px 0; font: 800 22px ui-monospace, monospace; }
+    .result-detail-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; padding: 12px 16px 16px; }
+    .result-detail { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px; background: #08121688; }
+    .result-detail h3 { margin: 0 0 7px; font-size: 15px; }
+    .funnel-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; background: var(--line-soft); }
+    .funnel-step { padding: 10px; background: #0c171c; text-align: center; }
+    .funnel-step strong, .funnel-step span { display: block; }
+    .funnel-reasons { padding: 10px 16px 14px; color: var(--muted); }
+    @media (max-width: 1100px) {
+      .result-metrics { grid-template-columns: repeat(3, 1fr); }
+      .result-detail-grid { grid-template-columns: 1fr; }
+      .funnel-strip { grid-template-columns: repeat(4, 1fr); }
+    }
+    @media (max-width: 620px) {
+      .result-metrics { grid-template-columns: repeat(2, 1fr); }
+      .funnel-strip { grid-template-columns: repeat(2, 1fr); }
+    }
     @media (max-width: 1000px) { .policy-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); } }
     @media (max-width: 620px) { .policy-grid { grid-template-columns: 1fr; } }
     dialog { color-scheme: dark; background: #101e24; color: #d7e5e3; border: 1px solid #45646a; border-radius: 12px; max-width: 520px; width: 90vw; }
@@ -724,6 +758,29 @@
       </div>
     </section>
 
+    <section id="resultDashboard" class="panel result-dashboard" aria-labelledby="resultDashboardTitle">
+      <div class="head"><div><h2 id="resultDashboardTitle" data-i18n="resultDashboardTitle">策略结果总览</h2><span data-i18n="simulationDisclaimer">全部为影子模拟，不连接钱包、不签名、不下单</span></div></div>
+      <div class="result-metrics">
+        <div class="result-metric"><span data-i18n="experimentSignals">实验信号</span><strong id="labSignalCount">0</strong><small data-i18n="positionsOnly">仅真实模拟仓位</small></div>
+        <div class="result-metric"><span data-i18n="allocatedCapital">累计模拟投入</span><strong id="labAllocated">US$0</strong><small data-i18n="hundredEach">每笔100 USDC</small></div>
+        <div class="result-metric"><span data-i18n="openPositions">当前持仓</span><strong id="labOpenPositions">0</strong><small data-i18n="eventExit">事件驱动退出</small></div>
+        <div class="result-metric"><span data-i18n="unrecoveredCapital">尚未收回本金</span><strong id="labUnrecovered">US$0</strong><small data-i18n="netLiquidationBasis">按净清算口径</small></div>
+        <div class="result-metric"><span data-i18n="principalRecovered">已收回本金</span><strong id="labPrincipalRecovered">0</strong><small data-i18n="recoveryTarget">净值翻倍跑本</small></div>
+        <div class="result-metric"><span data-i18n="realizedNet">已实现净收益</span><strong id="labRealizedNet">US$0</strong><small data-i18n="costIncluded">已含固定成本与滑点</small></div>
+      </div>
+      <div class="result-detail-grid">
+        <div class="result-detail"><h3 data-i18n="factorSnapshots">固定周期因子快照</h3><div class="table compact-table-wrap"><table class="compact-table"><thead><tr><th>5m</th><th>10m</th><th>15m</th></tr></thead><tbody><tr><td id="labM5">--</td><td id="labM10">--</td><td id="labM15">--</td></tr></tbody></table></div></div>
+        <div class="result-detail"><h3 data-i18n="exitSummary">退出结果</h3><div id="labExitRates">--</div></div>
+        <div class="result-detail"><h3 data-i18n="reportProgress">数据与下次总结</h3><div id="labDataQuality">--</div><div id="labReportProgress">--</div></div>
+      </div>
+    </section>
+
+    <section id="funnelPanel" class="panel funnel-panel" aria-labelledby="funnelTitle">
+      <div class="head"><h2 id="funnelTitle" data-i18n="funnelTitle">筛选漏斗</h2><span data-i18n="funnelSubtitle">未知证据进入深审，明确致命风险仍硬拒绝</span></div>
+      <div id="funnelCounts" class="funnel-strip"></div>
+      <div id="funnelReasons" class="funnel-reasons"></div>
+    </section>
+
     <section id="livePanel" class="panel live-panel" aria-labelledby="liveTitle">
       <div class="live-heading">
         <div><h2 id="liveTitle" data-i18n="liveTitle">即时发现 · 1分钟活跃榜</h2><small data-i18n="liveWarning">先发现，再核验。未完成深审，不代表安全或买入建议。</small></div>
@@ -752,7 +809,7 @@
     </section>
 
     <section class="grid">
-      <article class="panel wide manage-panel">
+      <article id="managePanel" class="panel wide manage-panel">
         <details id="manageDetails">
           <summary data-i18n="manageTitle">⚙ 扫描设置与记录</summary>
           <div class="manage-body">
@@ -780,7 +837,7 @@
         </details>
         <div id="importantAlerts" class="manage-body" aria-live="polite"></div>
       </article>
-      <article class="panel telemetry" aria-label="运行状态" data-i18n-aria="runtimeAria">
+      <article id="runtimePanel" class="panel telemetry" aria-label="运行状态" data-i18n-aria="runtimeAria">
         <div class="telemetry-item"><label data-i18n="localService">本地服务</label><strong id="serviceState" data-i18n="connecting">正在连接</strong><small id="serviceDetail" data-i18n="port3791">端口3791</small></div>
         <div class="telemetry-item"><label data-i18n="gmgnSource">GMGN数据源</label><strong id="providerState" data-i18n="waitingState">等待状态</strong><small id="providerDetail" data-i18n="notRead">尚未读取</small></div>
         <div class="telemetry-item"><label data-i18n="lastAttemptLabel">最近扫描尝试</label><strong id="lastAttempt">--</strong><small id="attemptAgo" data-i18n="noRecord">暂无记录</small></div>
@@ -796,7 +853,7 @@
       <article class="panel metric"><label><span data-i18n="chainCandidatesLabel">链上候选/待人工看X</span> <span class="scope" data-i18n="last30m">近30分钟</span></label><strong id="chainCandidates">0</strong><small id="chainCandidateDetail" data-i18n="notBuySignal">链上硬门通过，不代表应买入</small></article>
       <article class="panel metric"><label><span data-i18n="manualPassedLabel">人工通过</span> <span class="scope" data-i18n="last30mLocal">近30分钟/本机</span></label><strong id="manualPassed">0</strong><small id="manualDetail" data-i18n="localOnlyNoTrade">仅本浏览器标记，不会下单</small></article>
 
-      <article class="panel wide">
+      <article id="legacyOutcomePanel" class="panel wide">
         <div class="head"><h2 data-i18n="outcomeTitle">筛选后表现验证</h2><span data-i18n="shadowDisclaimer">影子观察，不代表可成交收益，也不作为交易指令</span></div>
         <div class="table compact-table-wrap">
           <table class="compact-table outcome-table">
@@ -836,14 +893,19 @@
           <summary data-i18n="factorDetails">因子质量、影子流水与策略历史</summary>
           <h3 data-i18n="factorRanking">因子质量榜</h3>
           <div id="factorLabFactors" class="table compact-table-wrap"></div>
-          <h3 data-i18n="shadowLedger">影子交易流水</h3>
-          <div id="factorLabTrades" class="table compact-table-wrap"></div>
+          <h3 data-i18n="positionLedger">真实模拟仓位</h3>
+          <div id="factorLabPositions" class="table compact-table-wrap"></div>
+          <h3 data-i18n="referenceSamples">参考样本 · 未投入模拟本金</h3>
+          <div id="factorLabSamples" class="table compact-table-wrap"></div>
+          <h3 data-i18n="stageReports">阶段报告</h3>
+          <div id="factorLabReports" class="table compact-table-wrap"></div>
+          <div id="factorLabTrades" hidden></div>
           <h3 data-i18n="strategyHistory">策略历史</h3>
           <div id="factorLabHistory" class="table compact-table-wrap"></div>
         </details>
       </article>
 
-      <article class="panel wide">
+      <article id="formalCandidatesPanel" class="panel wide">
         <div class="head">
           <h2 data-i18n="auditTitle">近30分钟深度审计</h2>
           <span data-i18n="auditSubtitle">市值2万–8万优先 · 创建至少5分钟 · 系统按GMGN额度分批深审</span>
@@ -872,7 +934,7 @@
         <div id="candidates" aria-live="polite"><div class="empty" data-i18n="loadingAuditRecords">正在读取审计记录……</div></div>
       </article>
 
-      <article class="panel wide">
+      <article id="eventsPanel" class="panel wide">
         <div class="head"><h2 data-i18n="eventsTitle">雷达事件</h2><span id="cycle" data-i18n="notScanned">尚未扫描</span></div>
         <div id="events" class="events"><div class="empty" data-i18n="noEvents">暂无事件</div></div>
       </article>
@@ -1078,6 +1140,33 @@
       last30mLocal: ['近30分钟/本机', '近30分鐘/本機', '30 min / local', '30分/ローカル', '30분/로컬', '30 دقيقة / محلي'],
       localOnlyNoTrade: ['仅本浏览器标记，不会下单', '僅本瀏覽器標記，不會下單', 'Browser-only mark; no order', 'このブラウザのみ・注文なし', '현재 브라우저에만 저장·주문 없음', 'علامة في هذا المتصفح فقط؛ لا أوامر'],
       outcomeTitle: ['筛选后表现验证', '篩選後表現驗證', 'Post-screen performance', '選別後パフォーマンス', '필터링 후 성과 검증', 'أداء ما بعد الفرز'],
+      resultDashboardTitle: ['策略结果总览','策略結果總覽','Strategy results','戦略結果','전략 결과','نتائج الاستراتيجية'],
+      simulationDisclaimer: ['全部为影子模拟，不连接钱包、不签名、不下单','全部為影子模擬，不連接錢包、不簽名、不下單','Shadow simulation only; no wallet, signing or orders','シャドー模擬のみ。ウォレット接続・署名・注文なし','섀도 시뮬레이션 전용; 지갑·서명·주문 없음','محاكاة فقط؛ بلا محفظة أو توقيع أو أوامر'],
+      experimentSignals: ['实验信号','實驗信號','Experiment signals','実験シグナル','실험 신호','إشارات التجربة'],
+      positionsOnly: ['仅真实模拟仓位','僅真實模擬倉位','Funded shadow positions only','模擬資金ポジションのみ','모의 자금 포지션만','مراكز المحاكاة الممولة فقط'],
+      allocatedCapital: ['累计模拟投入','累計模擬投入','Allocated shadow capital','累計模擬投入','누적 모의 투입','رأس المال المحاكى'],
+      hundredEach: ['每笔100 USDC','每筆100 USDC','100 USDC each','1件100 USDC','건당 100 USDC','100 USDC لكل مركز'],
+      openPositions: ['当前持仓','目前持倉','Open positions','保有中','현재 보유','المراكز المفتوحة'],
+      eventExit: ['事件驱动退出','事件驅動退出','Event-driven exits','イベント退出','이벤트 기반 청산','خروج حسب الحدث'],
+      unrecoveredCapital: ['尚未收回本金','尚未收回本金','Unrecovered principal','未回収元本','미회수 원금','رأس مال غير مسترد'],
+      netLiquidationBasis: ['按净清算口径','按淨清算口徑','Net liquidation basis','純清算価値ベース','순청산 가치 기준','على أساس صافي التصفية'],
+      principalRecovered: ['已收回本金','已收回本金','Principal recovered','元本回収済み','원금 회수','رأس المال المسترد'],
+      recoveryTarget: ['净值翻倍跑本','淨值翻倍跑本','Recover at 2× net value','純価値2倍で元本回収','순가치 2배에 원금 회수','استرداد الأصل عند تضاعف الصافي'],
+      realizedNet: ['已实现净收益','已實現淨收益','Realized net P/L','実現純損益','실현 순손익','صافي الربح المحقق'],
+      costIncluded: ['已含固定成本与滑点','已含固定成本與滑點','After fixed cost and slippage','固定費・滑り込み','고정비·슬리피지 반영','بعد التكاليف والانزلاق'],
+      factorSnapshots: ['固定周期因子快照','固定週期因子快照','Fixed-horizon snapshots','固定期間スナップショット','고정 기간 스냅샷','لقطات الفترات الثابتة'],
+      exitSummary: ['退出结果','退出結果','Exit outcomes','退出結果','청산 결과','نتائج الخروج'],
+      reportProgress: ['数据与下次总结','資料與下次總結','Data and next report','データと次回報告','데이터 및 다음 보고','البيانات والتقرير التالي'],
+      funnelTitle: ['筛选漏斗','篩選漏斗','Screening funnel','選別ファネル','선별 퍼널','مسار الفرز'],
+      funnelSubtitle: ['未知证据进入深审，明确致命风险仍硬拒绝','未知證據進入深審，明確致命風險仍硬拒絕','Unknown evidence proceeds to audit; explicit fatal risk is rejected','不明項目は深度審査へ、明確な致命リスクは拒否','미확인 증거는 심층 감사, 명확한 치명 위험은 거부','الأدلة المجهولة للتدقيق والمخاطر القاتلة تُرفض'],
+      funnelDiscovered: ['发现','發現','Discovered','発見','발견','مكتشف'],
+      funnelPrequalified: ['初筛','初篩','Pre-screened','一次審査','1차 선별','فحص أولي'],
+      funnelAudited: ['深审','深審','Deep audited','深度審査','심층 감사','تدقيق عميق'],
+      funnelFormal: ['正式候选','正式候選','Formal candidates','正式候補','정식 후보','مرشح رسمي'],
+      funnelSignals: ['实验信号','實驗信號','Experiment signals','実験シグナル','실험 신호','إشارات التجربة'],
+      funnelControls: ['对照','對照','Controls','対照','대조군','ضوابط'],
+      funnelRejected: ['硬拒绝','硬拒絕','Hard rejects','ハード拒否','강제 거부','رفض قاطع'],
+      funnelNoLoss: ['本轮暂无初筛流失原因','本輪暫無初篩流失原因','No pre-screen loss reason this cycle','今回の一次除外理由なし','이번 1차 탈락 사유 없음','لا أسباب استبعاد أولي'],
       factorLabTitle: ['固定周期因子实验室','固定週期因子實驗室','Fixed-horizon factor lab','固定期間ファクターラボ','고정 기간 팩터 실험실','مختبر عوامل الفترات الثابتة'],
       factorLabSubtitle: ['100 USDC影子盘 · 往返固定成本3% + 动态滑点 · 不会真实下单','100 USDC影子盤 · 往返固定成本3% + 動態滑點 · 不會真實下單','100 USDC shadow book · 3% round-trip base cost + dynamic slippage · no real orders','100 USDCシャドー運用・往復固定費3%＋動的スリッページ・実取引なし','100 USDC 섀도우 장부 · 왕복 고정비 3% + 동적 슬리피지 · 실제 주문 없음','محاكاة 100 USDC · تكلفة ثابتة 3٪ وانزلاق ديناميكي · بلا أوامر حقيقية'],
       labCurrent: ['主策略','主策略','Champion','現行戦略','주 전략','الاستراتيجية الرئيسية'],
@@ -1096,6 +1185,9 @@
       factorDetails: ['因子质量、影子流水与策略历史','因子品質、影子流水與策略歷史','Factor quality, shadow ledger and strategy history','因子品質・シャドー記録・戦略履歴','팩터 품질, 섀도우 내역 및 전략 기록','جودة العوامل وسجل المحاكاة وتاريخ الاستراتيجية'],
       factorRanking: ['因子质量榜','因子品質榜','Factor quality','因子品質','팩터 품질','جودة العوامل'],
       shadowLedger: ['影子交易流水','影子交易流水','Shadow ledger','シャドー取引記録','섀도우 거래 내역','سجل المحاكاة'],
+      positionLedger: ['真实模拟仓位','真實模擬倉位','Funded shadow positions','資金配分済み模擬ポジション','모의 자금 포지션','مراكز المحاكاة الممولة'],
+      referenceSamples: ['参考样本 · 未投入模拟本金','參考樣本 · 未投入模擬本金','Reference samples · no capital allocated','参照サンプル・模擬元本なし','참조 표본 · 모의 원금 없음','عينات مرجعية · بلا رأس مال'],
+      stageReports: ['阶段报告','階段報告','Stage reports','段階レポート','단계 보고서','تقارير مرحلية'],
       strategyHistory: ['策略历史','策略歷史','Strategy history','戦略履歴','전략 기록','تاريخ الاستراتيجية'],
       labAutoOn: ['自动晋级开启','自動晉級開啟','Auto-promotion on','自動昇格オン','자동 승격 켜짐','الترقية التلقائية مفعلة'],
       labAutoOff: ['自动晋级已暂停','自動晉級已暫停','Auto-promotion paused','自動昇格停止中','자동 승격 일시중지','الترقية التلقائية متوقفة'],
@@ -1931,7 +2023,7 @@
       const sortValue = byId('sortSelect').value;
       const policy = mergedPolicy(lastData || {});
       const rows = sortRows(rowsCache.filter(function (row) {
-        return rowMatches(row, query, filter, now);
+        return backendDisposition(row) === 'chain' && rowMatches(row, query, filter, now);
       }), sortValue);
       const queue = lastData && lastData.auditQueueStats ? lastData.auditQueueStats : {};
       const queueTotal = queue.queued !== undefined ? number(queue.queued) : number(queue.total);
@@ -2234,6 +2326,51 @@
       return text ? text.slice(0, 10) : '--';
     }
 
+    function renderResultDashboard(data) {
+      const summary = data.factorLabSummary || {};
+      const capital = summary.capital || {};
+      const exits = summary.exits || {};
+      const progress = summary.reportProgress || {};
+      const horizon = function (key) { return summary.horizons && summary.horizons[key] || {}; };
+      const metricText = function (key) {
+        const row = horizon(key);
+        return formatSignedPercent(row.conservativeMedian) + ' · ' + formatSignedPercent(row.hitRate) + ' · P10 ' + formatSignedPercent(row.p10);
+      };
+      byId('labSignalCount').textContent = formatCount(number(capital.positionCount));
+      byId('labAllocated').textContent = formatMoney(number(capital.allocatedUsdc));
+      byId('labOpenPositions').textContent = formatCount(number(capital.openPositions));
+      byId('labUnrecovered').textContent = formatMoney(number(capital.unrecoveredPrincipalUsdc));
+      byId('labPrincipalRecovered').textContent = formatCount(number(capital.principalRecovered));
+      byId('labRealizedNet').textContent = formatMoney(number(capital.realizedNetUsdc));
+      byId('labM5').textContent = metricText('m5');
+      byId('labM10').textContent = metricText('m10');
+      byId('labM15').textContent = metricText('m15');
+      byId('labExitRates').textContent = '跑本 ' + formatSignedPercent(exits.principalRecoveryRate) + ' · 止损 ' + formatSignedPercent(exits.stopRate)
+        + ' · 回撤 ' + formatSignedPercent(exits.trailingRate) + ' · 24h ' + formatSignedPercent(exits.timeoutRate);
+      const m15 = horizon('m15');
+      byId('labDataQuality').textContent = '15m覆盖 ' + formatSignedPercent(m15.coverage) + ' · 缺失 ' + formatCount(number(m15.missing));
+      const nextAt = Math.min(number(progress.nextStageEarliestAt, Infinity), number(progress.nextDailyAt, Infinity));
+      byId('labReportProgress').textContent = formatCount(number(progress.completed15m)) + ' / ' + formatCount(number(progress.nextStageCompleted15m))
+        + (Number.isFinite(nextAt) ? ' · ' + relativeTime(nextAt) : '');
+    }
+
+    function renderFunnel(data) {
+      const summary = data.funnelSummary || {};
+      const counts = summary.counts || {};
+      const steps = [
+        ['funnelDiscovered','discovered'], ['funnelPrequalified','prequalified'], ['funnelAudited','deepAudited'],
+        ['funnelFormal','formalCandidates'], ['funnelSignals','experimentalSignals'], ['funnelControls','controls'],
+        ['funnelRejected','hardRejects']
+      ];
+      byId('funnelCounts').innerHTML = steps.map(function (step) {
+        return '<div class="funnel-step"><strong>' + escapeHtml(formatCount(number(counts[step[1]]))) + '</strong><span>' + escapeHtml(t(step[0])) + '</span></div>';
+      }).join('');
+      const reasons = Array.isArray(summary.lossReasons) ? summary.lossReasons : [];
+      byId('funnelReasons').textContent = reasons.length
+        ? reasons.map(function (row) { return String(row.reason || '--') + ' × ' + formatCount(number(row.count)); }).join(' · ')
+        : t('funnelNoLoss');
+    }
+
     function renderFactorLabSummary(data) {
       const summary = data.factorLabSummary || {};
       factorLabAutoEnabled = summary.autoPromotionEnabled !== false;
@@ -2274,19 +2411,30 @@
       try {
         const responses = await Promise.all([
           fetch('/api/factor-lab?view=factors&limit=100', { signal: AbortSignal.timeout(10000) }),
-          fetch('/api/factor-lab?view=trades&limit=50&chain=' + encodeURIComponent(chain), { signal: AbortSignal.timeout(10000) }),
+          fetch('/api/factor-lab?view=positions&limit=50&chain=' + encodeURIComponent(chain), { signal: AbortSignal.timeout(10000) }),
+          fetch('/api/factor-lab?view=samples&limit=50&chain=' + encodeURIComponent(chain), { signal: AbortSignal.timeout(10000) }),
+          fetch('/api/factor-lab?view=reports&limit=50', { signal: AbortSignal.timeout(10000) }),
           fetch('/api/factor-lab?view=history&limit=50', { signal: AbortSignal.timeout(10000) })
         ]);
         if (responses.some(function (response) { return !response.ok; })) throw new Error('factor_lab_failed');
         const results = await Promise.all(responses.map(function (response) { return response.json(); }));
-        const factors = results[0].rows || [], trades = results[1].rows || [], history = results[2].rows || [];
+        const factors = results[0].rows || [], positions = results[1].rows || [], samples = results[2].rows || [];
+        const reports = results[3].rows || [], history = results[4].rows || [];
         byId('factorLabFactors').innerHTML = factorLabTable(
           ['因子','区间','样本','净收益中位数','盈利率','P10','匹配收益差','追高率'], factors,
           function (row) { return [escapeHtml(row.factor), escapeHtml(row.bucket), escapeHtml(formatCount(row.sampleCount)), escapeHtml(formatSignedPercent(row.medianNetReturn)), escapeHtml(formatSignedPercent(row.hitRate)), escapeHtml(formatSignedPercent(row.p10)), escapeHtml(formatSignedPercent(row.matchedUplift)), escapeHtml(formatSignedPercent(row.chaseRate))]; }
         );
-        byId('factorLabTrades').innerHTML = factorLabTable(
-          ['时间','代币','链','分组','入场价','10m净收益','动态成本','策略'], trades,
-          function (row) { const sample = row.samples && row.samples.m10 || {}; return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.cohort), escapeHtml(row.entry && Number.isFinite(Number(row.entry.price)) ? String(row.entry.price) : '--'), escapeHtml(formatSignedPercent(sample.netReturn)), escapeHtml(formatSignedPercent(sample.dynamicCostRate)), escapeHtml(shortVersion(row.strategyVersion))]; }
+        byId('factorLabPositions').innerHTML = factorLabTable(
+          ['时间','代币','链','入场价','止损线','跑本目标','已回收','剩余数量','状态/退出'], positions,
+          function (row) { return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.entry && Number.isFinite(Number(row.entry.price)) ? String(row.entry.price) : '--'), 'US$70', 'US$200', escapeHtml(formatMoney(number(row.recoveredUsdc))), escapeHtml(String(number(row.remainingUnits))), escapeHtml(row.exitReason || row.status || '--')]; }
+        );
+        byId('factorLabSamples').innerHTML = factorLabTable(
+          ['时间','代币','链','分组','资金','10m净收益','策略'], samples,
+          function (row) { const sample = row.samples && row.samples.m10 || {}; return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.cohort), '未投入模拟本金', escapeHtml(formatSignedPercent(sample.netReturn)), escapeHtml(shortVersion(row.strategyVersion))]; }
+        );
+        byId('factorLabReports').innerHTML = factorLabTable(
+          ['时间','类型','15m完成','模拟投入','已实现净收益','策略'], reports,
+          function (row) { return [escapeHtml(formatClock(row.at)), escapeHtml(row.type), escapeHtml(formatCount(number(row.completed15m))), escapeHtml(formatMoney(number(row.capital && row.capital.allocatedUsdc))), escapeHtml(formatMoney(number(row.capital && row.capital.realizedNetUsdc))), escapeHtml(shortVersion(row.strategyVersion))]; }
         );
         byId('factorLabHistory').innerHTML = factorLabTable(
           ['时间','事件','策略','变更','原因'], history,
@@ -2294,7 +2442,7 @@
         );
       } catch {
         factorLabDetailsLoadedAt = 0;
-        ['factorLabFactors','factorLabTrades','factorLabHistory'].forEach(function (id) { byId(id).innerHTML = '<div class="empty">' + escapeHtml(t('settingsFailed')) + '</div>'; });
+        ['factorLabFactors','factorLabPositions','factorLabSamples','factorLabReports','factorLabHistory'].forEach(function (id) { byId(id).innerHTML = '<div class="empty">' + escapeHtml(t('settingsFailed')) + '</div>'; });
       }
     }
 
@@ -2411,6 +2559,8 @@
       renderNotice(data);
       renderEvents(data);
       renderOutcomes(data);
+      renderResultDashboard(data);
+      renderFunnel(data);
       renderFactorLabSummary(data);
       renderChainSwitcher(data);
       renderGmgnConnection(data);

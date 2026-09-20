@@ -269,3 +269,47 @@ test('固定周期因子实验室使用紧凑表格并按需加载明细', () =>
   assert.doesNotMatch(html.slice(start, end), /class="card/);
   assert.match(html, /Number\.isFinite\(Number\(row\.entry\.price\)\)/);
 });
+
+test('首页按结果、正式候选、漏斗、即时榜、实验室和运行设置排序', () => {
+  for (const marker of ['resultDashboard', 'formalCandidatesPanel', 'funnelPanel', 'livePanel', 'factorLabPanel', 'managePanel', 'runtimePanel']) {
+    assert.match(html, new RegExp('id="' + marker + '"'));
+  }
+  assert.match(html, /#resultDashboard\s*{[^}]*order:\s*3/);
+  assert.match(html, /#formalCandidatesPanel\s*{[^}]*order:\s*4/);
+  assert.match(html, /#funnelPanel\s*{[^}]*order:\s*5/);
+  assert.match(html, /#livePanel\s*{[^}]*order:\s*6/);
+  assert.match(html, /#factorLabPanel\s*{[^}]*order:\s*7/);
+  assert.match(html, /#managePanel\s*{[^}]*order:\s*8/);
+});
+
+test('顶部结果总览包含资金、固定周期、退出率和报告进度', () => {
+  for (const id of [
+    'labSignalCount', 'labAllocated', 'labOpenPositions', 'labUnrecovered',
+    'labPrincipalRecovered', 'labRealizedNet', 'labM5', 'labM10', 'labM15',
+    'labExitRates', 'labDataQuality', 'labReportProgress'
+  ]) assert.match(html, new RegExp('id="' + id + '"'));
+  assert.match(html, /function renderResultDashboard/);
+  assert.match(html, /summary.capital/);
+  assert.match(html, /summary.reportProgress/);
+});
+
+test('正式候选只渲染完整通过记录且漏斗展示主要流失原因', () => {
+  const start = html.indexOf('function renderCandidates');
+  const end = html.indexOf('function activeChain', start);
+  assert.match(html.slice(start, end), /backendDisposition\(row\) === 'chain'/);
+  assert.match(html, /id="funnelCounts"/);
+  assert.match(html, /id="funnelReasons"/);
+  assert.match(html, /function renderFunnel/);
+});
+
+test('实验室分离真实仓位、未投入本金参考样本和阶段报告', () => {
+  for (const id of ['factorLabPositions', 'factorLabSamples', 'factorLabReports']) {
+    assert.match(html, new RegExp('id="' + id + '"'));
+  }
+  assert.match(html, /view=positions/);
+  assert.match(html, /view=samples/);
+  assert.match(html, /view=reports/);
+  assert.match(html, /未投入模拟本金/);
+  assert.match(html, /止损线/);
+  assert.match(html, /跑本目标/);
+});
