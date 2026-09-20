@@ -571,6 +571,7 @@ function publicTrade(trade) {
     id: String(trade.id || '').slice(0, 64), chain: String(trade.chain || '').slice(0, 32),
     address: String(trade.address || '').slice(0, 128), symbol: String(trade.symbol || '?').slice(0, 30),
     cohort: String(trade.cohort || '').slice(0, 24), exploration: trade.exploration === true,
+    evidenceTier: String(trade.evidenceTier || '').slice(0, 24), notionalUsdc: finite(trade.notionalUsdc),
     signalAt: finite(trade.signalAt), strategyVersion: String(trade.strategyVersion || '').slice(0, 64),
     initialDecision: String(trade.initialDecision || '').slice(0, 32), latestDecision: String(trade.latestDecision || '').slice(0, 32),
     chaseRisk: trade.chaseRisk === true, matchedTradeId: String(trade.matchedTradeId || '').slice(0, 64),
@@ -584,6 +585,44 @@ function publicTrade(trade) {
       liquidity: finite(trade.entry.liquidity), source: String(trade.entry.source || '').slice(0, 40) }
       : { targetAt: finite(trade.entry?.targetAt), missingAt: finite(trade.entry?.missingAt), missingKind: String(trade.entry?.missingKind || '').slice(0, 40) },
     samples: Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => [key, publicSample(trade.samples?.[key])]))
+  };
+}
+
+function publicPosition(position) {
+  return {
+    ...publicTrade(position),
+    status: String(position.status || '').slice(0, 24),
+    allocatedUsdc: finite(position.allocatedUsdc), recoveredUsdc: finite(position.recoveredUsdc),
+    remainingUnits: finite(position.remainingUnits), highWaterNetUsdc: finite(position.highWaterNetUsdc),
+    realizedNetUsdc: finite(position.realizedNetUsdc), conservativeReturn: finite(position.conservativeReturn),
+    closedAt: finite(position.closedAt), exitReason: String(position.exitReason || '').slice(0, 48),
+    costModelVersion: finite(position.costModelVersion), exitPolicyVersion: finite(position.exitPolicyVersion),
+    cashflows: (Array.isArray(position.cashflows) ? position.cashflows : []).slice(-50).map(row => ({
+      at: finite(row.at), kind: String(row.kind || '').slice(0, 48), units: finite(row.units),
+      price: finite(row.price), liquidity: finite(row.liquidity), netUsdc: finite(row.netUsdc),
+      fixedCostRate: finite(row.fixedCostRate), dynamicImpactRate: finite(row.dynamicImpactRate)
+    }))
+  };
+}
+
+function publicReport(report) {
+  const metric = row => ({
+    eligible: finite(row?.eligible), completed: finite(row?.completed), missing: finite(row?.missing),
+    coverage: finite(row?.coverage), observedMedian: finite(row?.observedMedian),
+    conservativeMedian: finite(row?.conservativeMedian), hitRate: finite(row?.hitRate), p10: finite(row?.p10)
+  });
+  return {
+    id: String(report?.id || '').slice(0, 64), type: ['STAGE', 'DAILY'].includes(report?.type) ? report.type : '',
+    at: finite(report?.at), completed15m: finite(report?.completed15m),
+    strategyVersion: String(report?.strategyVersion || '').slice(0, 64),
+    capital: {
+      positionCount: finite(report?.capital?.positionCount), allocatedUsdc: finite(report?.capital?.allocatedUsdc),
+      openPositions: finite(report?.capital?.openPositions), unrecoveredPrincipalUsdc: finite(report?.capital?.unrecoveredPrincipalUsdc),
+      principalRecovered: finite(report?.capital?.principalRecovered), realizedNetUsdc: finite(report?.capital?.realizedNetUsdc)
+    },
+    exits: Object.fromEntries(['stopRate', 'principalRecoveryRate', 'trailingRate', 'timeoutRate', 'safetyRate']
+      .map(key => [key, finite(report?.exits?.[key])])),
+    horizons: Object.fromEntries(MAIN_HORIZONS.map(key => [key, metric(report?.horizons?.[key])]))
   };
 }
 
@@ -952,6 +991,7 @@ export class FactorLab {
       if (failure.code === 'GMGN_RATE_LIMITED') break;
     }
     this.prune(now());
+    this.reportTick(now(), { save: false });
     this.save();
     return this.state;
   }
@@ -987,6 +1027,42 @@ export class FactorLab {
     this.save();
   }
 
+  reportTick(now = this.now(), { save = true } = {}) {
+    this.syncCollections();
+    const completed15m = this.state.trades.filter(row => row.cohort === 'signal'
+      && Number.isFinite(row.samples?.m15?.conservativeReturn)).length;
+    const reports = this.state.reports || (this.state.reports = []);
+    const lastStage = [...reports].reverse().find(row => row.type === 'STAGE');
+    const lastDaily = [...reports].reverse().find(row => row.type === 'DAILY');
+    const created = [];
+    const snapshot = type => {
+      const summary = this.summary(now);
+      return Object.freeze({
+        id: hash(type + ':' + now + ':' + completed15m).slice(0, 32),
+        type, at: now, completed15m,
+        strategyVersion: this.state.champion?.version || '',
+        capital: clone(summary.capital), exits: clone(summary.exits),
+        horizons: clone(Object.fromEntries(MAIN_HORIZONS.map(key => [key, summary.horizons[key]])))
+      });
+    };
+    const stageBaseAt = finite(lastStage?.at) ?? finite(this.state.champion?.activatedAt) ?? now;
+    const stageBaseCount = finite(lastStage?.completed15m) ?? 0;
+    if (completed15m >= stageBaseCount + 20 && now - stageBaseAt >= 6 * 60 * 60_000) {
+      const report = snapshot('STAGE');
+      reports.push(report);
+      created.push(report);
+    }
+    const dailyBaseAt = finite(lastDaily?.at) ?? finite(this.state.champion?.activatedAt) ?? now;
+    if (now - dailyBaseAt >= DAY) {
+      const report = snapshot('DAILY');
+      reports.push(report);
+      created.push(report);
+    }
+    this.state.reports = reports.slice(-1_000);
+    if (created.length && save) this.save();
+    return created.map(clone);
+  }
+
   summary(now = this.now()) {
     const signals = this.state.trades.filter(row => row.cohort === 'signal');
     const horizons = Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => {
@@ -1007,6 +1083,20 @@ export class FactorLab {
         p10: percentile(conservative, 0.10)
       }];
     }));
+    const positions = this.state.trades.filter(row => row.cohort === 'signal'
+      && row.legacyFixedHorizonOnly !== true && Number(row.allocatedUsdc) > 0);
+    const allocatedUsdc = positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0);
+    const openPositions = positions.filter(row => ['OPEN', 'RUNNER'].includes(row.status)).length;
+    const principalRecovered = positions.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length;
+    const unrecoveredPrincipalUsdc = positions.reduce((sum, row) =>
+      sum + Math.max(0, Number(row.allocatedUsdc || 0) - Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0))), 0);
+    const realizedNetUsdc = positions.filter(row => row.status === 'CLOSED')
+      .reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0);
+    const rate = reason => positions.length ? positions.filter(row => row.exitReason === reason).length / positions.length : 0;
+    const completed15m = signals.filter(row => Number.isFinite(row.samples?.m15?.conservativeReturn)).length;
+    const lastReport = (this.state.reports || []).at(-1) || null;
+    const lastStage = [...(this.state.reports || [])].reverse().find(row => row.type === 'STAGE');
+    const lastDaily = [...(this.state.reports || [])].reverse().find(row => row.type === 'DAILY');
     return {
       enabled: true,
       autoPromotionEnabled: this.state.autoPromotionEnabled === true,
@@ -1018,6 +1108,20 @@ export class FactorLab {
       controlCount: this.state.trades.filter(row => row.cohort === 'control').length,
       hardRejectCount: this.state.trades.filter(row => row.cohort === 'hard_reject').length,
       matchedPairs: signals.filter(row => row.matchedTradeId).length,
+      capital: { positionCount: positions.length, allocatedUsdc, openPositions,
+        unrecoveredPrincipalUsdc, principalRecovered, realizedNetUsdc },
+      exits: {
+        stopRate: rate('STOP_LOSS'), principalRecoveryRate: positions.length ? principalRecovered / positions.length : 0,
+        trailingRate: rate('TRAILING_DRAWDOWN'), timeoutRate: rate('EXPERIMENT_TIMEOUT'),
+        safetyRate: positions.length ? positions.filter(row => String(row.exitReason || '').startsWith('SAFETY_')).length / positions.length : 0
+      },
+      reportProgress: {
+        completed15m,
+        nextStageCompleted15m: (Math.floor(completed15m / 20) + 1) * 20,
+        lastReportAt: finite(lastReport?.at) ?? 0,
+        nextStageEarliestAt: (finite(lastStage?.at) ?? finite(this.state.champion?.activatedAt) ?? now) + 6 * 60 * 60_000,
+        nextDailyAt: (finite(lastDaily?.at) ?? finite(this.state.champion?.activatedAt) ?? now) + DAY
+      },
       horizons,
       lastPromotionAt: Number(this.state.lastPromotionAt || 0),
       recoveredFromBackup: this.state.recoveredFromBackup === true,
@@ -1027,9 +1131,10 @@ export class FactorLab {
 
   query(parameters = {}) {
     const view = String(parameters.view || 'summary');
-    if (!['summary', 'factors', 'trades', 'history'].includes(view)) throw Object.assign(new Error('invalid_factor_lab_view'), { statusCode: 400 });
+    if (!['summary', 'factors', 'trades', 'positions', 'samples', 'reports', 'history'].includes(view)) throw Object.assign(new Error('invalid_factor_lab_view'), { statusCode: 400 });
     const limit = clamp(Number.parseInt(parameters.limit || '50', 10) || 50, 1, 100);
     const cursor = Math.max(0, Number.parseInt(parameters.cursor || '0', 10) || 0);
+    this.syncCollections();
     if (view === 'summary') return { view, summary: this.summary() };
     let rows;
     if (view === 'factors') {
@@ -1046,9 +1151,12 @@ export class FactorLab {
       changedPaths: Array.isArray(row.changedPaths) ? row.changedPaths.slice(0, 4).map(value => String(value).slice(0, 80)) : [],
       reason: String(row.reason || '').slice(0, 80)
     }));
+    else if (view === 'reports') rows = [...this.state.reports].reverse().map(publicReport);
     else {
       const horizon = Object.hasOwn(SHADOW_HORIZONS, parameters.horizon) ? parameters.horizon : 'm10';
-      rows = [...this.state.trades].reverse()
+      const source = view === 'positions' ? this.state.positions
+        : view === 'samples' ? this.state.referenceSamples : this.state.trades;
+      rows = [...source].reverse()
         .filter(row => !parameters.chain || row.chain === parameters.chain)
         .filter(row => !parameters.cohort || row.cohort === parameters.cohort)
         .filter(row => !parameters.strategyVersion || row.strategyVersion === parameters.strategyVersion)
@@ -1058,19 +1166,23 @@ export class FactorLab {
           return parameters.result === 'profit' ? Number.isFinite(value) && value > 0
             : parameters.result === 'loss' ? Number.isFinite(value) && value <= 0
               : parameters.result === 'missing' ? !Number.isFinite(value) : false;
-        }).map(publicTrade);
+        }).map(view === 'positions' ? publicPosition : publicTrade);
     }
     const page = rows.slice(cursor, cursor + limit);
     return { view, rows: page, nextCursor: cursor + page.length < rows.length ? String(cursor + page.length) : null, total: rows.length };
   }
 
   exportPublic() {
+    this.syncCollections();
     return {
       version: FACTOR_LAB_VERSION,
       exportedAt: this.now(),
       summary: this.summary(),
       factors: factorQualityRows(this.state.trades),
       trades: this.state.trades.map(publicTrade),
+      positions: this.state.positions.map(publicPosition),
+      referenceSamples: this.state.referenceSamples.map(publicTrade),
+      reports: this.state.reports.map(publicReport),
       aggregates: this.state.aggregates.map(publicAggregate),
       history: this.query({ view: 'history', limit: 100 }).rows
     };

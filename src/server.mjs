@@ -344,6 +344,18 @@ function publicAuditQueueStats(source = {}) {
   ]);
 }
 
+function publicFunnelSummary(source = {}) {
+  return {
+    counts: countSummary(source.counts || {}, [
+      'discovered', 'prequalified', 'deepAudited', 'formalCandidates',
+      'experimentalSignals', 'controls', 'hardRejects'
+    ]),
+    lossReasons: (Array.isArray(source.lossReasons) ? source.lossReasons : []).slice(0, 10).map(row => ({
+      reason: text(row?.reason, 80), count: finite(row?.count)
+    }))
+  };
+}
+
 function publicOutcomeSummary(source = {}) {
   return {
     ...countSummary(source, [
@@ -387,7 +399,21 @@ function publicFactorLabSummary(source = {}) {
     tracked: finite(source.tracked), signalCount: finite(source.signalCount), controlCount: finite(source.controlCount),
     hardRejectCount: finite(source.hardRejectCount), matchedPairs: finite(source.matchedPairs),
     lastPromotionAt: finite(source.lastPromotionAt), recoveredFromBackup: source.recoveredFromBackup === true,
-    disabledReason: publicCode(source.disabledReason), horizons
+    disabledReason: publicCode(source.disabledReason), horizons,
+    capital: {
+      positionCount: finite(source.capital?.positionCount), allocatedUsdc: finite(source.capital?.allocatedUsdc),
+      openPositions: finite(source.capital?.openPositions), unrecoveredPrincipalUsdc: finite(source.capital?.unrecoveredPrincipalUsdc),
+      principalRecovered: finite(source.capital?.principalRecovered), realizedNetUsdc: finite(source.capital?.realizedNetUsdc)
+    },
+    exits: Object.fromEntries(['stopRate', 'principalRecoveryRate', 'trailingRate', 'timeoutRate', 'safetyRate']
+      .map(key => [key, finiteOrNull(source.exits?.[key])])),
+    reportProgress: {
+      completed15m: finite(source.reportProgress?.completed15m),
+      nextStageCompleted15m: finite(source.reportProgress?.nextStageCompleted15m),
+      lastReportAt: finite(source.reportProgress?.lastReportAt),
+      nextStageEarliestAt: finite(source.reportProgress?.nextStageEarliestAt),
+      nextDailyAt: finite(source.reportProgress?.nextDailyAt)
+    }
   };
 }
 
@@ -398,6 +424,9 @@ function factorLabParameters(searchParams, supportedChains) {
     summary: new Set(['view']),
     factors: new Set(['view', 'chain', 'strategyVersion', 'horizon', 'limit', 'cursor']),
     trades: new Set(['view', 'chain', 'cohort', 'strategyVersion', 'horizon', 'result', 'limit', 'cursor']),
+    positions: new Set(['view', 'chain', 'strategyVersion', 'horizon', 'result', 'limit', 'cursor']),
+    samples: new Set(['view', 'chain', 'cohort', 'strategyVersion', 'horizon', 'result', 'limit', 'cursor']),
+    reports: new Set(['view', 'limit', 'cursor']),
     history: new Set(['view', 'limit', 'cursor'])
   };
   const allowed = allowedByView[view];
@@ -460,6 +489,7 @@ export function toPublicStatus(source = {}) {
     },
     sourceHealth: publicSourceHealth(source.sourceHealth),
     auditQueueStats: publicAuditQueueStats(source.auditQueueStats),
+    funnelSummary: publicFunnelSummary(source.funnelSummary),
     outcomeSummary: publicOutcomeSummary(source.outcomeSummary),
     policy: {
       chain: text(source.policy?.chain, 32),
