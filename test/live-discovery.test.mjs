@@ -47,7 +47,7 @@ test('quick discovery drops explicit hazards and newborns, preserves unknowns an
     token(5,{creation_timestamp:now/1000-200}),token(6,{liquidity:2000}),token(7,{address:'invalid'}),
     token(8,{market_cap:null}),token(9,{smart_degen_count:null,rug_ratio:null,buy_tax:null,website:'javascript:alert(1)'})], 'bsc',[],now);
   assert.equal(rows.length,2); assert.equal(rows[1].smartMoney,null); assert.equal(rows[1].hasUnknownRisk,true);
-  assert.equal(rows[1].auditEligible,false); assert.equal(rows[1].website,'');
+  assert.equal(rows[1].auditEligible,true); assert.equal(rows[1].website,'');
   assert.ok(rows.every(row=>row.newAt===0 && row.priceDelta===null));
   const upper='So11111111111111111111111111111111111111112',lower='so11111111111111111111111111111111111111112';
   assert.equal(normalizeLiveRows([token(1,{address:upper}),token(2,{address:lower})],'sol',[],now).length,2);

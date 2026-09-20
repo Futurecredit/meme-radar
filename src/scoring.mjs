@@ -151,17 +151,12 @@ export function discoveryScreen(row, config, nowSec = Date.now() / 1000) {
   else if (!(mc >= config.discoveryMinMarketCap && mc <= config.discoveryMaxMarketCap)) reasons.push('市值不在发现范围');
   if (liquidityValue === null) reasons.push('流动性数据未知');
   else if (liquidity < config.minLiquidity) reasons.push('流动性不足');
-  if (rug === null) reasons.push('rug风险数据未知');
-  else if (rug > 0.30) reasons.push('rug风险过高');
-  if (bundler === null) reasons.push('捆绑机器人数据未知');
-  else if (bundler > 0.30) reasons.push('捆绑机器人占比过高');
-  if (insider === null) reasons.push('内幕数据未知');
-  else if (insider > 0.30) reasons.push('内幕/老鼠仓占比过高');
-  if (wash === null) reasons.push('刷量数据未知');
-  else if (wash) reasons.push('检测到刷量');
+  if (rug !== null && rug > 0.30) reasons.push('rug风险过高');
+  if (bundler !== null && bundler > 0.30) reasons.push('捆绑机器人占比过高');
+  if (insider !== null && insider > 0.30) reasons.push('内幕/老鼠仓占比过高');
+  if (wash === true) reasons.push('检测到刷量');
   if (lower(config.chain) !== 'sol') {
-    if (honeypot === null) reasons.push('貔貅数据未知');
-    else if (honeypot) reasons.push('检测到貔貅盘');
+    if (honeypot === true) reasons.push('检测到貔貅盘');
   }
   const priorityBand = mc >= config.priorityMinMarketCap && mc <= config.priorityMaxMarketCap;
   const volume = num(first(row.volume_1h, row.volume, row.volume_24h));

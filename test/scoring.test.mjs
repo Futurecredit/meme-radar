@@ -24,12 +24,12 @@ test('discovery waits five minutes and prioritizes 20k-80k market cap', () => {
   assert.equal(discoveryScreen({ ...base, creation_timestamp: nowSec - 299 }, config, nowSec).pass, false);
 });
 
-test('discovery recognizes boolean variants and fails closed on malformed safety fields', () => {
+test('discovery recognizes boolean variants and sends malformed safety fields to deep audit', () => {
   const base = { address, market_cap: 50_000, liquidity: 10_000, creation_timestamp: nowSec - 600, rug_ratio: .1, bundler_rate: .1, rat_trader_amount_rate: .1, is_wash_trading: false, is_honeypot: 0 };
   assert.match(discoveryScreen({ ...base, is_honeypot: true }, config, nowSec).reasons.join(' '), /貔貅/);
   assert.match(discoveryScreen({ ...base, is_wash_trading: 'true' }, config, nowSec).reasons.join(' '), /刷量/);
   const unknown = discoveryScreen({ ...base, rug_ratio: 'unknown' }, config, nowSec);
-  assert.equal(unknown.pass, false);
+  assert.equal(unknown.pass, true);
   assert.ok(unknown.unknownFields.includes('rugRatio'));
 });
 

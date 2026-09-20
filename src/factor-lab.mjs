@@ -245,6 +245,8 @@ export function createShadowTrade(candidate, { cohort, signalAt = Date.now(), po
     address: normalizedAddress,
     symbol: String(candidate.symbol || '?').slice(0, 30),
     cohort,
+    evidenceTier: cohort === 'signal' ? String(candidate.evidenceTier || (candidate.status === 'X_REVIEW' ? 'formal' : 'incomplete')) : 'reference',
+    notionalUsdc: cohort === 'signal' ? SHADOW_NOTIONAL_USDC : 0,
     exploration: exploration === true,
     signalAt,
     signalPrice: finite(candidate.price),
@@ -438,6 +440,7 @@ function migrateState(raw, policy, now) {
 
 function cohortFor(candidate) {
   if (candidate.status === 'X_REVIEW') return 'signal';
+  if (candidate.status === 'WAIT_RECHECK' && candidate.experimentEligible === true) return 'signal';
   if (candidate.status === 'WAIT_RECHECK') return 'control';
   if (candidate.status === 'HARD_REJECT') return 'hard_reject';
   return '';

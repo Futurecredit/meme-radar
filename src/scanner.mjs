@@ -29,6 +29,7 @@ const REQUIRED_CALIBRATION_WINDOWS = Object.freeze(['m30', 'h2', 'h24']);
 const CHAIN_SCOPE_KEYS = Object.freeze([
   'scanCount', 'discoveredCount', 'prequalifiedCount', 'candidates', 'rejected',
   'auditQueue', 'auditQueueStats', 'outcomes', 'outcomeSummary', 'sourceHealth',
+  'funnelSummary',
   'lastAttemptAt', 'lastSuccessAt', 'lastCompleteSuccessAt', 'lastCycleMs', 'retryAt', 'status', 'generatedAt', 'nextCycleAt'
 ]);
 const RESERVED_X_PATHS = new Set([
@@ -215,6 +216,30 @@ export function collectionEnvelope(settings) {
     minLiquidity: Math.max(0, Math.floor(num(settings.minLiquidity) * 0.5)),
     minAgeSec: Math.max(60, Math.floor(num(settings.minAgeSec) * 0.5))
   });
+}
+
+export function summarizeFunnel({ discovered = 0, screened = [], candidates = [] } = {}) {
+  const lossCounts = new Map();
+  for (const item of screened) {
+    if (item?.screen?.pass) continue;
+    for (const reason of item?.screen?.reasons || []) {
+      const key = String(reason || '').slice(0, 80);
+      if (key) lossCounts.set(key, (lossCounts.get(key) || 0) + 1);
+    }
+  }
+  return {
+    counts: {
+      discovered: Math.max(0, Number(discovered) || 0),
+      prequalified: screened.filter(item => item?.screen?.pass).length,
+      deepAudited: candidates.length,
+      formalCandidates: candidates.filter(item => item?.status === 'X_REVIEW').length,
+      experimentalSignals: candidates.filter(item => item?.experimentEligible === true && item?.status !== 'HARD_REJECT').length,
+      controls: candidates.filter(item => item?.status === 'WAIT_RECHECK' && item?.experimentEligible !== true).length,
+      hardRejects: candidates.filter(item => item?.status === 'HARD_REJECT').length
+    },
+    lossReasons: [...lossCounts.entries()].map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason)).slice(0, 10)
+  };
 }
 
 function nextAuditDelay(status, settings) {
@@ -614,6 +639,9 @@ export class Scanner {
           const candidate = {
             ...visibleToken,
             status: classification.status,
+            experimentEligible: classification.status === 'X_REVIEW'
+              || (classification.status === 'WAIT_RECHECK' && classification.hardFailed.length === 0 && item.screen.pass),
+            evidenceTier: classification.status === 'X_REVIEW' ? 'formal' : 'incomplete',
             auditedAt,
             staleAt: auditedAt + settings.staleCandidateMs,
             deep,
@@ -714,6 +742,7 @@ export class Scanner {
           return num(rank[b.status]) - num(rank[a.status]) || Number(b.priorityBand) - Number(a.priorityBand) || num(b.discoveryScore) - num(a.discoveryScore);
         })
         .slice(0, 200);
+      const funnelSummary = summarizeFunnel({ discovered: discovered.length, screened, candidates });
       const rejected = screened.filter(item => !item.screen.pass).slice(0, 100).map(item => ({
         address: String(item.row.address || ''), symbol: String(item.row.symbol || '?').slice(0, 30),
         marketCap: marketCap(item.row), createdAt: createdAt(item.row), reasons: item.screen.reasons
@@ -740,6 +769,7 @@ export class Scanner {
         scanCount: num(prior.scanCount) + 1,
         discoveredCount: discovered.length,
         prequalifiedCount: prequalified.length,
+        funnelSummary,
         candidates,
         rejected,
         auditQueue,
