@@ -267,7 +267,8 @@ test('固定周期因子实验室使用紧凑表格并按需加载明细', () =>
   const start = html.indexOf('id="factorLabPanel"');
   const end = html.indexOf('<article class="panel wide">', start + 30);
   assert.doesNotMatch(html.slice(start, end), /class="card/);
-  assert.match(html, /Number\.isFinite\(Number\(row\.entry\.price\)\)/);
+  assert.match(html, /const fundedPositions = positions\.filter/);
+  assert.match(html, /String\(row\.entry\.price\)/);
 });
 
 test('首页按结果、正式候选、漏斗、即时榜、实验室和运行设置排序', () => {
@@ -312,4 +313,9 @@ test('实验室分离真实仓位、未投入本金参考样本和阶段报告',
   assert.match(html, /未投入模拟本金/);
   assert.match(html, /止损线/);
   assert.match(html, /跑本目标/);
+  assert.match(html, /row\.evidenceTier/);
+  assert.match(html, /待入场/);
+  assert.match(html, /const fundedPositions = positions\.filter/);
+  assert.match(html, /'状态\/退出'\], fundedPositions/);
+  assert.match(html, /尚未投入模拟本金/);
 });

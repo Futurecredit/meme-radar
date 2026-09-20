@@ -4,7 +4,7 @@ import path from 'node:path';
 import { atomicJson, readJsonWithBackup, tokenKey } from './local-store.mjs';
 import {
   ENTRY_FIXED_COST_RATE, EXIT_FIXED_COST_RATE, EXIT_POLICY_VERSION,
-  POSITION_COST_MODEL_VERSION, applyExitCandle, applySafetyExit, applyTimeoutExit, openShadowPosition, positionLiquidityImpact
+  MAX_HOLD_MS, POSITION_COST_MODEL_VERSION, applyExitCandle, applySafetyExit, applyTimeoutExit, openShadowPosition, positionLiquidityImpact
 } from './shadow-position.mjs';
 
 export const FACTOR_LAB_VERSION = 2;
@@ -291,7 +291,7 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     && Math.abs(Number(sample.at) - Number(job.targetAt)) <= 60_000;
   if (job.kind === 'entry') {
     if (!valid) return false;
-    if (trade.cohort === 'signal') openShadowPosition(trade, {
+    if (trade.cohort === 'signal' && trade.legacyFixedHorizonOnly !== true) openShadowPosition(trade, {
       at: Number(sample.at), price: Number(sample.price),
       liquidity: finite(sample.liquidity) ?? trade.factors.liquidity,
       source: String(sample.source || 'GMGN_1M_CLOSE')
@@ -618,6 +618,7 @@ function publicReport(report) {
     capital: {
       positionCount: finite(report?.capital?.positionCount), allocatedUsdc: finite(report?.capital?.allocatedUsdc),
       openPositions: finite(report?.capital?.openPositions), unrecoveredPrincipalUsdc: finite(report?.capital?.unrecoveredPrincipalUsdc),
+      recoveredPrincipalUsdc: finite(report?.capital?.recoveredPrincipalUsdc),
       principalRecovered: finite(report?.capital?.principalRecovered), realizedNetUsdc: finite(report?.capital?.realizedNetUsdc)
     },
     exits: Object.fromEntries(['stopRate', 'principalRecoveryRate', 'trailingRate', 'timeoutRate', 'safetyRate']
@@ -630,6 +631,13 @@ function publicAggregate(aggregate) {
   const allowedFactors = new Set(['marketCap', 'liquidity', 'ageSec', 'discoveryScore', 'holders', 'volume1h', 'smartWallets', 'priorityBand', 'kolOnly']);
   return {
     at: finite(aggregate?.at), type: aggregate?.type === 'PRUNED' ? 'PRUNED' : 'ARCHIVE', count: finite(aggregate?.count),
+    capital: {
+      positionCount: finite(aggregate?.capital?.positionCount), allocatedUsdc: finite(aggregate?.capital?.allocatedUsdc),
+      recoveredPrincipalUsdc: finite(aggregate?.capital?.recoveredPrincipalUsdc), principalRecovered: finite(aggregate?.capital?.principalRecovered),
+      realizedNetUsdc: finite(aggregate?.capital?.realizedNetUsdc),
+      exitCounts: Object.fromEntries(Object.entries(aggregate?.capital?.exitCounts || {}).slice(0, 20)
+        .map(([key, value]) => [String(key).slice(0, 48), finite(value)]))
+    },
     groups: (Array.isArray(aggregate?.groups) ? aggregate.groups : []).slice(0, 500).map(group => ({
       strategyVersion: String(group?.strategyVersion || '').slice(0, 64), chain: String(group?.chain || '').slice(0, 32),
       cohort: String(group?.cohort || '').slice(0, 24), horizon: Object.hasOwn(SHADOW_HORIZONS, group?.horizon) ? group.horizon : '',
@@ -719,8 +727,23 @@ function archiveTrades(trades, now) {
       }
     }
   }
+  const positions = trades.filter(trade => trade?.cohort === 'signal' && trade?.legacyFixedHorizonOnly !== true
+    && Number(trade.allocatedUsdc) > 0 && trade.status === 'CLOSED');
+  const exitCounts = {};
+  for (const position of positions) {
+    const reason = String(position.exitReason || 'UNKNOWN');
+    exitCounts[reason] = (exitCounts[reason] || 0) + 1;
+  }
   return {
     at: now, type: 'PRUNED', count: trades.length,
+    capital: {
+      positionCount: positions.length,
+      allocatedUsdc: positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0),
+      recoveredPrincipalUsdc: positions.reduce((sum, row) => sum + Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0)), 0),
+      principalRecovered: positions.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length,
+      realizedNetUsdc: positions.reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0),
+      exitCounts
+    },
     groups: [...groups.values()].map(group => ({
       strategyVersion: group.strategyVersion, chain: group.chain, cohort: group.cohort, horizon: group.horizon,
       count: group.count, observedCount: group.observed.length, conservativeCount: group.conservative.length,
@@ -904,13 +927,18 @@ export class FactorLab {
   }
 
   prune(now = this.now()) {
-    const expired = this.state.trades.filter(trade => now - Number(trade.signalAt || 0) > RETENTION_MS);
-    const fresh = this.state.trades.filter(trade => now - Number(trade.signalAt || 0) <= RETENTION_MS)
+    const protectedOpen = this.state.trades.filter(trade => ['OPEN', 'RUNNER'].includes(trade?.status));
+    const removable = this.state.trades.filter(trade => !['OPEN', 'RUNNER'].includes(trade?.status));
+    const expired = removable.filter(trade => now - Number(trade.signalAt || 0) > RETENTION_MS);
+    const fresh = removable.filter(trade => now - Number(trade.signalAt || 0) <= RETENTION_MS)
       .sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0));
-    const overflow = fresh.length > MAX_TRADES ? fresh.slice(0, fresh.length - MAX_TRADES) : [];
+    const available = Math.max(0, MAX_TRADES - protectedOpen.length);
+    const overflow = fresh.length > available ? fresh.slice(0, fresh.length - available) : [];
     const removed = [...expired, ...overflow];
     if (removed.length) this.state.aggregates.push(archiveTrades(removed, now));
-    this.state.trades = fresh.slice(-MAX_TRADES);
+    const kept = available > 0 ? fresh.slice(-available) : [];
+    this.state.trades = [...protectedOpen, ...kept]
+      .sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0));
     this.state.aggregates = this.state.aggregates.slice(-1_000);
     this.state.history = this.state.history.slice(-1_000);
   }
@@ -921,19 +949,63 @@ export class FactorLab {
 
   async collect(gmgn, { limit = 4, now = this.now, deadline = Infinity } = {}) {
     let reads = 0;
+    const initialNow = now();
+    const standardDue = this.dueJobs(initialNow).filter(job => !(['OPEN', 'RUNNER'].includes(job.trade?.status)
+      && job.trade?.cohort === 'signal' && job.trade?.legacyFixedHorizonOnly !== true));
+    const reservedStandardReads = standardDue.length && limit > 1 ? 1 : 0;
+    const pathReadLimit = Math.max(0, limit - reservedStandardReads);
     const openPositions = this.state.trades.filter(row => row?.cohort === 'signal'
-      && ['OPEN', 'RUNNER'].includes(row.status) && row.entry?.at)
-      .sort((a, b) => Number(a.lastCandleAt || a.entry.at) - Number(b.lastCandleAt || b.entry.at));
+      && row?.legacyFixedHorizonOnly !== true && ['OPEN', 'RUNNER'].includes(row.status) && row.entry?.at)
+      .filter(row => row.pendingExit
+        ? initialNow >= Number(row.exitRetry?.nextAt || 0)
+        : initialNow >= Number(row.pathRetry?.nextAt || 0))
+      .sort((a, b) => Number(Boolean(b.pendingExit)) - Number(Boolean(a.pendingExit))
+        || Number(a.lastPathAttemptAt || 0) - Number(b.lastPathAttemptAt || 0)
+        || Number(a.lastCandleAt || a.entry.at) - Number(b.lastCandleAt || b.entry.at));
+
+    const settlePending = async (position, requestedAt) => {
+      if (!position.pendingExit || reads >= pathReadLimit || typeof gmgn.liquiditySnapshot !== 'function') return false;
+      let snapshot = null;
+      try {
+        snapshot = await gmgn.liquiditySnapshot(position.address, position.chain);
+        reads++;
+      } catch (error) {
+        reads++;
+        position.exitRetry = { code: String(error?.code || 'READ_FAILED'), nextAt: requestedAt + 120_000 };
+        return false;
+      }
+      if (!(finite(snapshot?.liquidity) > 0)) {
+        position.exitRetry = { code: 'LIQUIDITY_UNAVAILABLE', nextAt: requestedAt + 120_000 };
+        return false;
+      }
+      const pending = position.pendingExit;
+      const applied = pending.event === 'EXPERIMENT_TIMEOUT'
+        ? applyTimeoutExit(position, { at: pending.candle.closeAt, price: pending.candle.close, liquidity: snapshot.liquidity })
+        : applyExitCandle(position, pending.candle, { exitLiquidity: snapshot.liquidity }).applied;
+      if (!applied) return false;
+      position.lastCandleAt = pending.candle.closeAt;
+      delete position.pendingExit;
+      delete position.exitRetry;
+      return true;
+    };
+
     if (typeof gmgn.candlesBetween === 'function') {
       for (const position of openPositions) {
-        if (reads >= limit || now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
+        if (reads >= pathReadLimit || now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
         const requestedAt = now();
+        if (position.pendingExit) {
+          await settlePending(position, requestedAt);
+          continue;
+        }
         let candles = [];
         try {
           candles = await gmgn.candlesBetween(position.address,
             Number(position.lastCandleAt || position.entry.at), requestedAt, position.chain, requestedAt);
           reads++;
+          position.lastPathAttemptAt = requestedAt;
         } catch (error) {
+          reads++;
+          position.lastPathAttemptAt = requestedAt;
           position.pathRetry = {
             code: String(error?.code || 'READ_FAILED'),
             nextAt: requestedAt + 120_000
@@ -941,28 +1013,38 @@ export class FactorLab {
           if (error?.code === 'GMGN_RATE_LIMITED') break;
           continue;
         }
+        if (!candles.length) position.pathRetry = { code: 'NO_CANDLE', nextAt: requestedAt + 60_000 };
+        else delete position.pathRetry;
         for (const candle of candles) {
           const due = dueShadowJobs([position], candle.closeAt)
             .filter(job => job.kind === 'exit' && Math.abs(job.targetAt - candle.closeAt) <= 60_000);
           for (const job of due) applyPriceSample(position, job, {
             at: candle.closeAt, price: candle.close, source: candle.source
           });
+          const previousCursor = position.lastCandleAt;
           const detected = applyExitCandle(position, candle, { exitLiquidity: null });
-          if (detected.pending === 'EXIT_LIQUIDITY' && typeof gmgn.liquiditySnapshot === 'function') {
-            try {
-              const snapshot = await gmgn.liquiditySnapshot(position.address, position.chain);
-              applyExitCandle(position, candle, { exitLiquidity: snapshot?.liquidity });
-            } catch (error) {
-              position.exitRetry = { code: String(error?.code || 'READ_FAILED'), nextAt: requestedAt + 120_000 };
-            }
+          if (detected.pending === 'EXIT_LIQUIDITY') {
+            position.pendingExit = { event: detected.event, candle: clone(candle) };
+            if (previousCursor === undefined) delete position.lastCandleAt;
+            else position.lastCandleAt = previousCursor;
+            await settlePending(position, requestedAt);
+            if (position.pendingExit || position.status === 'CLOSED') break;
           }
-          if (['OPEN', 'RUNNER'].includes(position.status)) applyTimeoutExit(position, {
-            at: candle.closeAt, price: candle.close, liquidity: position.entry.liquidity
-          });
+          if (!['OPEN', 'RUNNER'].includes(position.status)) break;
+          const timeoutAt = Number(position.entry.at) + MAX_HOLD_MS;
+          if (candle.closeAt >= timeoutAt && candle.closeAt <= timeoutAt + 60_000) {
+            position.pendingExit = { event: 'EXPERIMENT_TIMEOUT', candle: clone(candle) };
+            if (previousCursor === undefined) delete position.lastCandleAt;
+            else position.lastCandleAt = previousCursor;
+            await settlePending(position, requestedAt);
+            if (position.pendingExit || position.status === 'CLOSED') break;
+          } else if (candle.closeAt > timeoutAt + 60_000) {
+            position.timeoutMissingAt = requestedAt;
+            position.pathRetry = { code: 'TIMEOUT_CANDLE_MISSING', nextAt: requestedAt + 120_000 };
+            break;
+          }
           position.lastCandleAt = candle.closeAt;
-          if (position.status === 'CLOSED') break;
         }
-        delete position.pathRetry;
       }
     }
     const remaining = Math.max(0, limit - reads);
@@ -1085,14 +1167,29 @@ export class FactorLab {
     }));
     const positions = this.state.trades.filter(row => row.cohort === 'signal'
       && row.legacyFixedHorizonOnly !== true && Number(row.allocatedUsdc) > 0);
-    const allocatedUsdc = positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0);
+    const archivedCapital = (this.state.aggregates || []).reduce((total, row) => {
+      const capital = row?.capital || {};
+      total.positionCount += Number(capital.positionCount || 0);
+      total.allocatedUsdc += Number(capital.allocatedUsdc || 0);
+      total.recoveredPrincipalUsdc += Number(capital.recoveredPrincipalUsdc || 0);
+      total.principalRecovered += Number(capital.principalRecovered || 0);
+      total.realizedNetUsdc += Number(capital.realizedNetUsdc || 0);
+      for (const [reason, count] of Object.entries(capital.exitCounts || {})) total.exitCounts[reason] = (total.exitCounts[reason] || 0) + Number(count || 0);
+      return total;
+    }, { positionCount: 0, allocatedUsdc: 0, recoveredPrincipalUsdc: 0, principalRecovered: 0, realizedNetUsdc: 0, exitCounts: {} });
+    const allocatedUsdc = archivedCapital.allocatedUsdc + positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0);
     const openPositions = positions.filter(row => ['OPEN', 'RUNNER'].includes(row.status)).length;
-    const principalRecovered = positions.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length;
+    const principalRecovered = archivedCapital.principalRecovered
+      + positions.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length;
+    const recoveredPrincipalUsdc = archivedCapital.recoveredPrincipalUsdc + positions.reduce((sum, row) =>
+      sum + Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0)), 0);
     const unrecoveredPrincipalUsdc = positions.reduce((sum, row) =>
       sum + Math.max(0, Number(row.allocatedUsdc || 0) - Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0))), 0);
-    const realizedNetUsdc = positions.filter(row => row.status === 'CLOSED')
+    const realizedNetUsdc = archivedCapital.realizedNetUsdc + positions.filter(row => row.status === 'CLOSED')
       .reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0);
-    const rate = reason => positions.length ? positions.filter(row => row.exitReason === reason).length / positions.length : 0;
+    const positionCount = archivedCapital.positionCount + positions.length;
+    const rate = reason => positionCount
+      ? ((archivedCapital.exitCounts[reason] || 0) + positions.filter(row => row.exitReason === reason).length) / positionCount : 0;
     const completed15m = signals.filter(row => Number.isFinite(row.samples?.m15?.conservativeReturn)).length;
     const lastReport = (this.state.reports || []).at(-1) || null;
     const lastStage = [...(this.state.reports || [])].reverse().find(row => row.type === 'STAGE');
@@ -1108,12 +1205,13 @@ export class FactorLab {
       controlCount: this.state.trades.filter(row => row.cohort === 'control').length,
       hardRejectCount: this.state.trades.filter(row => row.cohort === 'hard_reject').length,
       matchedPairs: signals.filter(row => row.matchedTradeId).length,
-      capital: { positionCount: positions.length, allocatedUsdc, openPositions,
-        unrecoveredPrincipalUsdc, principalRecovered, realizedNetUsdc },
+      capital: { positionCount, allocatedUsdc, openPositions,
+        unrecoveredPrincipalUsdc, recoveredPrincipalUsdc, principalRecovered, realizedNetUsdc },
       exits: {
-        stopRate: rate('STOP_LOSS'), principalRecoveryRate: positions.length ? principalRecovered / positions.length : 0,
+        stopRate: rate('STOP_LOSS'), principalRecoveryRate: positionCount ? principalRecovered / positionCount : 0,
         trailingRate: rate('TRAILING_DRAWDOWN'), timeoutRate: rate('EXPERIMENT_TIMEOUT'),
-        safetyRate: positions.length ? positions.filter(row => String(row.exitReason || '').startsWith('SAFETY_')).length / positions.length : 0
+        safetyRate: positionCount ? ([...Object.entries(archivedCapital.exitCounts), ...positions.map(row => [row.exitReason, 1])]
+          .reduce((sum, [reason, count]) => sum + (String(reason || '').startsWith('SAFETY_') ? Number(count || 0) : 0), 0) / positionCount) : 0
       },
       reportProgress: {
         completed15m,

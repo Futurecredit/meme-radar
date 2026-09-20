@@ -403,6 +403,7 @@ function publicFactorLabSummary(source = {}) {
     capital: {
       positionCount: finite(source.capital?.positionCount), allocatedUsdc: finite(source.capital?.allocatedUsdc),
       openPositions: finite(source.capital?.openPositions), unrecoveredPrincipalUsdc: finite(source.capital?.unrecoveredPrincipalUsdc),
+      recoveredPrincipalUsdc: finite(source.capital?.recoveredPrincipalUsdc),
       principalRecovered: finite(source.capital?.principalRecovered), realizedNetUsdc: finite(source.capital?.realizedNetUsdc)
     },
     exits: Object.fromEntries(['stopRate', 'principalRecoveryRate', 'trailingRate', 'timeoutRate', 'safetyRate']

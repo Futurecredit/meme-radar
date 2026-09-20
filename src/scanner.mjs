@@ -119,6 +119,7 @@ function socialFrom(token) {
 
 export function classifyDeepResult(deep, auditMeta = {}) {
   const failed = new Set(deep?.failed || []);
+  const explicitFatal = new Set(deep?.explicitFatalChecks || []);
   const unknown = new Set(deep?.blockingUnknownFields || deep?.unknownFields || []);
   const unknownCheck = name => {
     const prefixes = {
@@ -132,8 +133,8 @@ export function classifyDeepResult(deep, auditMeta = {}) {
   };
   const transient = new Set(['wallets', 'observation', 'marketBehavior']);
   if (deep?.honeypotEvidence !== '检测到貔貅') transient.add('notHoneypot');
-  const hardFailed = [...failed].filter(name => !transient.has(name) && !unknownCheck(name));
-  const waitingFailed = [...failed].filter(name => transient.has(name) || unknownCheck(name));
+  const hardFailed = [...failed].filter(name => explicitFatal.has(name) || (!transient.has(name) && !unknownCheck(name)));
+  const waitingFailed = [...failed].filter(name => !explicitFatal.has(name) && (transient.has(name) || unknownCheck(name)));
   if (auditMeta.complete === false) waitingFailed.push('auditIncomplete');
   if (hardFailed.length) return { status: 'HARD_REJECT', hardFailed, waitingFailed };
   if (!deep?.chainPass || auditMeta.complete === false) return { status: 'WAIT_RECHECK', hardFailed, waitingFailed };

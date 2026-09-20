@@ -60,7 +60,7 @@ test('net doubling recovers exactly principal then 35 percent drawdown exits rem
   const { openShadowPosition, applyExitCandle } = await positionModule();
   const position = trade();
   openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
-  const recovery = applyExitCandle(position, candle({ openAt: 120_000, closeAt: 180_000, open: 1.5, high: 2.5, low: 1.4, close: 2.2 }), { exitLiquidity: 10_000 });
+  const recovery = applyExitCandle(position, candle({ openAt: 120_000, closeAt: 180_000, open: 2.1, high: 2.5, low: 2.1, close: 2.2 }), { exitLiquidity: 10_000 });
   assert.equal(recovery.event, 'PRINCIPAL_RECOVERY');
   assert.ok(Math.abs(position.recoveredUsdc - 100) < 1e-9);
   assert.ok(position.remainingUnits > 0);
@@ -100,4 +100,40 @@ test('safety loss and 24 hour timeout close conservatively without future backfi
   assert.equal(applyTimeoutExit(timed, { at: 60_000 + 24 * 60 * 60_000, price: 2, liquidity: 10_000 }), true);
   assert.equal(timed.exitReason, 'EXPERIMENT_TIMEOUT');
   assert.equal(timed.status, 'CLOSED');
+});
+
+test('exit liquidity cannot create a fill outside the triggering candle range', async () => {
+  const { openShadowPosition, applyExitCandle } = await positionModule();
+  const position = trade();
+  openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
+  const result = applyExitCandle(position, candle({ openAt: 120_000, closeAt: 180_000, open: 1.5, high: 2.2, low: 1.4, close: 2 }), { exitLiquidity: 800 });
+  assert.equal(result.event, null);
+  assert.equal(position.status, 'OPEN');
+  assert.equal(position.cashflows.length, 1);
+});
+
+test('principal recovery and a later 35 percent drawdown in one candle close conservatively', async () => {
+  const { openShadowPosition, applyExitCandle } = await positionModule();
+  const position = trade();
+  openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
+  const result = applyExitCandle(position, candle({ openAt: 120_000, closeAt: 180_000, open: 1.5, high: 3, low: 1.4, close: 1.5 }), { exitLiquidity: 10_000 });
+  assert.equal(result.event, 'TRAILING_DRAWDOWN');
+  assert.equal(position.status, 'CLOSED');
+  assert.deepEqual(position.cashflows.map(row => row.kind), ['ENTRY', 'PRINCIPAL_RECOVERY', 'TRAILING_DRAWDOWN']);
+});
+
+test('runner safety loss preserves already recovered principal and timeout rejects late prices', async () => {
+  const { openShadowPosition, applyExitCandle, applySafetyExit, applyTimeoutExit, MAX_HOLD_MS } = await positionModule();
+  const runner = trade();
+  openShadowPosition(runner, { at: 60_000, price: 1, liquidity: 10_000 });
+  applyExitCandle(runner, candle({ openAt: 120_000, closeAt: 180_000, open: 2.1, high: 2.5, low: 2.1, close: 2.2 }), { exitLiquidity: 10_000 });
+  applySafetyExit(runner, { at: 180_001, tradable: false, code: 'POOL_REMOVED' });
+  assert.equal(runner.recoveredUsdc, 100);
+  assert.equal(runner.realizedNetUsdc, 0);
+  assert.equal(runner.conservativeReturn, 0);
+
+  const timed = trade();
+  openShadowPosition(timed, { at: 60_000, price: 1, liquidity: 10_000 });
+  assert.equal(applyTimeoutExit(timed, { at: 60_000 + MAX_HOLD_MS + 120_001, price: 2, liquidity: 10_000 }), false);
+  assert.equal(timed.status, 'OPEN');
 });

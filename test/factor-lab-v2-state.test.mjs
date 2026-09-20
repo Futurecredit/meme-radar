@@ -102,3 +102,94 @@ test('a confirmed hard safety failure closes an existing experimental position',
     assert.ok(position.recoveredUsdc > 0 && position.recoveredUsdc < 100);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('pending exit keeps its candle across retry and restart until liquidity is available', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v2-pending-exit-'));
+  try {
+    let now = 200_000;
+    let lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+    const position = lab.recordCandidate(row(), { now: 1 });
+    openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
+    await lab.collect({
+      disabled: false, nextAllowedAt: 0,
+      async candlesBetween() { return [{ openAt: 120_000, closeAt: 180_000, open: .8, high: .9, low: .5, close: .6, source: 'GMGN_1M_OHLC' }]; },
+      async liquiditySnapshot() { return null; }
+    }, { limit: 2, now: () => now });
+    assert.equal(position.status, 'OPEN');
+    assert.equal(position.pendingExit?.event, 'STOP_LOSS');
+    assert.notEqual(position.lastCandleAt, 180_000);
+
+    now += 120_000;
+    lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+    let pathCalls = 0;
+    await lab.collect({
+      disabled: false, nextAllowedAt: 0,
+      async candlesBetween() { pathCalls++; return []; },
+      async liquiditySnapshot() { return { liquidity: 10_000 }; }
+    }, { limit: 1, now: () => now });
+    assert.equal(lab.state.positions[0].status, 'CLOSED');
+    assert.equal(lab.state.positions[0].exitReason, 'STOP_LOSS');
+    assert.equal(pathCalls, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('collection reserves budget for pending entries and rotates open paths', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v2-fairness-'));
+  try {
+    let now = 400_000;
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+    for (let i = 1; i <= 5; i++) {
+      const position = lab.recordCandidate(row({ address: `0x${String(i).padStart(40, '0')}` }), { now: i });
+      if (i < 5) openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
+    }
+    const calls = { paths: [], prices: 0 };
+    await lab.collect({
+      disabled: false, nextAllowedAt: 0,
+      async candlesBetween(address) { calls.paths.push(address); return []; },
+      async priceAt() { calls.prices++; return { at: 60_000, price: 1, liquidity: 10_000, source: 'GMGN_1M_CLOSE' }; }
+    }, { limit: 4, now: () => now });
+    assert.equal(calls.paths.length, 3);
+    assert.equal(calls.prices, 1);
+    assert.equal(lab.state.positions.find(item => item.address.endsWith('5')).status, 'OPEN');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('V1 fixed-horizon references never receive V2 capital during later collection', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v1-no-capital-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'factor-lab.json'), JSON.stringify({
+      version: 1, history: [], trades: [{ id: 'legacy', cohort: 'signal', chain: 'bsc', address: '0x1',
+        signalAt: 1, factors: { liquidity: 10_000 }, entry: { targetAt: 60_000 }, samples: {}, retries: {} }]
+    }));
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 120_000 });
+    await lab.collect({ disabled: false, nextAllowedAt: 0,
+      async priceAt() { return { at: 60_000, price: 1, liquidity: 10_000, source: 'GMGN_1M_CLOSE' }; }
+    }, { limit: 1, now: () => 120_000 });
+    const legacy = lab.state.referenceSamples[0];
+    assert.equal(legacy.entry.price, 1);
+    assert.equal(legacy.allocatedUsdc, undefined);
+    assert.notEqual(legacy.status, 'OPEN');
+    assert.equal(lab.state.positions.length, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('retention protects open positions and archives closed capital totals', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v2-retention-'));
+  try {
+    const now = 100 * 24 * 60 * 60_000;
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+    lab.state.trades = [
+      { id: 'open', cohort: 'signal', signalAt: 1, status: 'OPEN', allocatedUsdc: 100, recoveredUsdc: 0, samples: {} },
+      { id: 'closed', cohort: 'signal', signalAt: 2, status: 'CLOSED', allocatedUsdc: 100, recoveredUsdc: 120,
+        realizedNetUsdc: 20, exitReason: 'TRAILING_DRAWDOWN', samples: {} }
+    ];
+    lab.prune(now);
+    assert.ok(lab.state.trades.some(item => item.id === 'open'));
+    assert.ok(!lab.state.trades.some(item => item.id === 'closed'));
+    const capital = lab.summary(now).capital;
+    assert.equal(capital.positionCount, 2);
+    assert.equal(capital.allocatedUsdc, 200);
+    assert.equal(capital.recoveredPrincipalUsdc, 100);
+    assert.equal(capital.realizedNetUsdc, 20);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

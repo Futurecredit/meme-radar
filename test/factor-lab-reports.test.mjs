@@ -55,7 +55,7 @@ test('daily reports are immutable snapshots and capital summary uses positions o
 
     assert.deepEqual(summary.capital, {
       positionCount: 2, allocatedUsdc: 200, openPositions: 1,
-      unrecoveredPrincipalUsdc: 0, principalRecovered: 2, realizedNetUsdc: 10
+      unrecoveredPrincipalUsdc: 0, recoveredPrincipalUsdc: 200, principalRecovered: 2, realizedNetUsdc: 10
     });
     assert.equal(summary.exits.trailingRate, .5);
     assert.equal(summary.reportProgress.nextStageCompleted15m, 20);

@@ -581,6 +581,20 @@ export function deepScreen({ discovery, audit, nowMs = Date.now() }, config) {
     marketBehavior: marketBehavior.pass
   };
   const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name);
+  const explicitFatalChecks = [
+    openSource === false ? 'openSource' : null,
+    (!isSol && ownerRenounced === false) || (isSol && (renouncedMint === false || renouncedFreezeAccount === false)) ? 'ownerRenounced' : null,
+    !isSol && explicitHoneypot ? 'notHoneypot' : null,
+    (buyTax !== null && buyTax > config.maxBuyTax) || (sellTax !== null && sellTax > config.maxSellTax) ? 'tax' : null,
+    !lpBurned && lockRate !== null && lockRate < config.minLpLockedRate ? 'lpLocked' : null,
+    rugRatio !== null && rugRatio > config.maxRugRatio ? 'rug' : null,
+    top10 !== null && top10 > config.maxTop10Rate ? 'concentration' : null,
+    !creatorClosed && devHold !== null && devHold > .01 ? 'dev' : null,
+    insider !== null && insider > config.maxInsiderRate ? 'insider' : null,
+    bundler !== null && bundler > config.maxBundlerRate ? 'bundler' : null,
+    sniperHold !== null && sniperHold > config.maxSniperHoldRate ? 'sniper' : null,
+    wash === true ? 'wash' : null
+  ].filter(Boolean);
   const chainPass = failed.length === 0;
   const honeypotEvidence = isSol ? 'SOL不使用EVM貔貅字段；以铸币和冻结权限为安全基线'
     : exactNotHoneypot ? 'GMGN明确非貔貅' : sellability.pass ? '经验卖出证据' : explicitHoneypot ? '检测到貔貅' : '未验证';
@@ -627,7 +641,7 @@ export function deepScreen({ discovery, audit, nowMs = Date.now() }, config) {
     ...(!isSol && honeypot === null && !sellability.pass ? sellability.unknownFields : [])
   ].filter(Boolean);
   return {
-    chainPass, failed, checks, wallets, observation, marketBehavior, sellability, honeypotEvidence,
+    chainPass, failed, explicitFatalChecks: [...new Set(explicitFatalChecks)], checks, wallets, observation, marketBehavior, sellability, honeypotEvidence,
     unknownFields: [...new Set(unknownFields)],
     blockingUnknownFields: [...new Set(blockingUnknownFields)],
     security: {

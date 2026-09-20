@@ -7,6 +7,7 @@ import { config } from '../src/config.mjs';
 import { defaultPolicy, runtimePolicy } from '../src/policy.mjs';
 import { discoveryScreen } from '../src/scoring.mjs';
 import { FactorLab } from '../src/factor-lab.mjs';
+import { classifyDeepResult } from '../src/scanner.mjs';
 
 const baseRow = {
   address: '0x0000000000000000000000000000000000000001',
@@ -92,4 +93,19 @@ test('funnel summary separates formal, experimental, control and hard-reject out
     experimentalSignals: 2, controls: 1, hardRejects: 1
   });
   assert.deepEqual(summary.lossReasons[0], { reason: '流动性不足', count: 2 });
+});
+
+test('one explicit fatal safety value cannot be softened by a related unknown field', () => {
+  const tax = classifyDeepResult({
+    chainPass: false, failed: ['tax'], blockingUnknownFields: ['buyTax'],
+    explicitFatalChecks: ['tax'], security: { buyTax: null, sellTax: .99 }
+  });
+  assert.equal(tax.status, 'HARD_REJECT');
+  assert.deepEqual(tax.hardFailed, ['tax']);
+
+  const solAuthority = classifyDeepResult({
+    chainPass: false, failed: ['ownerRenounced'], blockingUnknownFields: ['renouncedMint'],
+    explicitFatalChecks: ['ownerRenounced'], security: { renouncedMint: null, renouncedFreezeAccount: false }
+  });
+  assert.equal(solAuthority.status, 'HARD_REJECT');
 });

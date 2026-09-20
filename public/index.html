@@ -894,6 +894,7 @@
           <h3 data-i18n="factorRanking">因子质量榜</h3>
           <div id="factorLabFactors" class="table compact-table-wrap"></div>
           <h3 data-i18n="positionLedger">真实模拟仓位</h3>
+          <div id="factorLabPendingSignals" class="muted"></div>
           <div id="factorLabPositions" class="table compact-table-wrap"></div>
           <h3 data-i18n="referenceSamples">参考样本 · 未投入模拟本金</h3>
           <div id="factorLabSamples" class="table compact-table-wrap"></div>
@@ -2336,11 +2337,11 @@
         const row = horizon(key);
         return formatSignedPercent(row.conservativeMedian) + ' · ' + formatSignedPercent(row.hitRate) + ' · P10 ' + formatSignedPercent(row.p10);
       };
-      byId('labSignalCount').textContent = formatCount(number(capital.positionCount));
+      byId('labSignalCount').textContent = formatCount(number(summary.signalCount));
       byId('labAllocated').textContent = formatMoney(number(capital.allocatedUsdc));
       byId('labOpenPositions').textContent = formatCount(number(capital.openPositions));
       byId('labUnrecovered').textContent = formatMoney(number(capital.unrecoveredPrincipalUsdc));
-      byId('labPrincipalRecovered').textContent = formatCount(number(capital.principalRecovered));
+      byId('labPrincipalRecovered').textContent = formatMoney(number(capital.recoveredPrincipalUsdc));
       byId('labRealizedNet').textContent = formatMoney(number(capital.realizedNetUsdc));
       byId('labM5').textContent = metricText('m5');
       byId('labM10').textContent = metricText('m10');
@@ -2424,9 +2425,11 @@
           ['因子','区间','样本','净收益中位数','盈利率','P10','匹配收益差','追高率'], factors,
           function (row) { return [escapeHtml(row.factor), escapeHtml(row.bucket), escapeHtml(formatCount(row.sampleCount)), escapeHtml(formatSignedPercent(row.medianNetReturn)), escapeHtml(formatSignedPercent(row.hitRate)), escapeHtml(formatSignedPercent(row.p10)), escapeHtml(formatSignedPercent(row.matchedUplift)), escapeHtml(formatSignedPercent(row.chaseRate))]; }
         );
+        const fundedPositions = positions.filter(function (row) { return Number(row.allocatedUsdc) > 0; });
+        byId('factorLabPendingSignals').textContent = '待入场实验信号 ' + formatCount(positions.length - fundedPositions.length) + ' 笔 · 尚未投入模拟本金';
         byId('factorLabPositions').innerHTML = factorLabTable(
-          ['时间','代币','链','入场价','止损线','跑本目标','已回收','剩余数量','状态/退出'], positions,
-          function (row) { return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.entry && Number.isFinite(Number(row.entry.price)) ? String(row.entry.price) : '--'), 'US$70', 'US$200', escapeHtml(formatMoney(number(row.recoveredUsdc))), escapeHtml(String(number(row.remainingUnits))), escapeHtml(row.exitReason || row.status || '--')]; }
+          ['时间','代币','链','证据','入场价','止损线','跑本目标','已回收','剩余数量','状态/退出'], fundedPositions,
+          function (row) { return [escapeHtml(formatClock(row.signalAt)), escapeHtml(row.symbol || row.address || '--'), escapeHtml(row.chain), escapeHtml(row.evidenceTier === 'formal' ? '正式' : '证据不全实验'), escapeHtml(String(row.entry.price)), 'US$70', 'US$200', escapeHtml(formatMoney(number(row.recoveredUsdc))), escapeHtml(String(number(row.remainingUnits))), escapeHtml(row.exitReason || row.status || '--')]; }
         );
         byId('factorLabSamples').innerHTML = factorLabTable(
           ['时间','代币','链','分组','资金','10m净收益','策略'], samples,

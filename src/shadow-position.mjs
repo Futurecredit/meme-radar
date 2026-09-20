@@ -51,7 +51,8 @@ export function openShadowPosition(position, sample) {
   const price = finite(sample?.price);
   const at = finite(sample?.at);
   const liquidity = finite(sample?.liquidity) ?? finite(position?.factors?.liquidity);
-  if (!position || position.cohort !== 'signal' || !(price > 0) || at === null || !(liquidity > 0)) return false;
+  if (!position || position.cohort !== 'signal' || position.legacyFixedHorizonOnly === true
+    || !(price > 0) || at === null || !(liquidity > 0)) return false;
   if (position.entry?.targetAt && Math.abs(at - Number(position.entry.targetAt)) > 60_000) return false;
   const entryImpact = positionLiquidityImpact(liquidity);
   const units = PRINCIPAL_USDC * (1 - ENTRY_FIXED_COST_RATE) * (1 - entryImpact) / price;
@@ -94,9 +95,11 @@ export function applyExitCandle(position, rawCandle, { exitLiquidity } = {}) {
   const estimateLiquidity = finite(position.entry?.liquidity);
   if (!(estimateLiquidity > 0)) return { event: null, applied: false };
 
+  const liquidity = finite(exitLiquidity);
+  const valuationLiquidity = liquidity > 0 ? liquidity : estimateLiquidity;
   if (position.status === 'OPEN') {
-    const estimatedLow = netLiquidationValue(position, candle.low, estimateLiquidity);
-    const estimatedHigh = netLiquidationValue(position, candle.high, estimateLiquidity);
+    const estimatedLow = netLiquidationValue(position, candle.low, valuationLiquidity);
+    const estimatedHigh = netLiquidationValue(position, candle.high, valuationLiquidity);
     const candidate = estimatedLow <= STOP_LIQUIDATION_USDC ? 'STOP_LOSS'
       : estimatedHigh >= RECOVERY_LIQUIDATION_USDC ? 'PRINCIPAL_RECOVERY' : null;
     if (!candidate) {
@@ -104,7 +107,6 @@ export function applyExitCandle(position, rawCandle, { exitLiquidity } = {}) {
       position.lastCandleAt = candle.closeAt;
       return { event: null, applied: true };
     }
-    const liquidity = finite(exitLiquidity);
     if (!(liquidity > 0)) return { event: candidate, applied: false, pending: 'EXIT_LIQUIDITY' };
     if (candidate === 'STOP_LOSS') {
       const target = thresholdPrice(position, STOP_LIQUIDATION_USDC, liquidity);
@@ -124,21 +126,30 @@ export function applyExitCandle(position, rawCandle, { exitLiquidity } = {}) {
     position.recoveredUsdc = proceeds;
     position.principalRecoveredAt = candle.openAt;
     position.status = 'RUNNER';
-    position.highWaterNetUsdc = netLiquidationValue(position, fillPrice, liquidity);
+    const runnerHigh = netLiquidationValue(position, candle.high, liquidity);
+    position.highWaterNetUsdc = Math.max(netLiquidationValue(position, fillPrice, liquidity) || 0, runnerHigh || 0);
+    const runnerTrigger = position.highWaterNetUsdc * (1 - TRAILING_DRAWDOWN_RATE);
+    const runnerLow = netLiquidationValue(position, candle.low, liquidity);
+    if (runnerLow <= runnerTrigger) {
+      const runnerTarget = thresholdPrice(position, runnerTrigger, liquidity);
+      const runnerUnits = position.remainingUnits;
+      const runnerProceeds = runnerUnits * runnerTarget * exitMultiplier(liquidity);
+      close(position, 'TRAILING_DRAWDOWN', candle.closeAt, runnerProceeds, runnerUnits, runnerTarget, liquidity);
+      return { event: 'TRAILING_DRAWDOWN', applied: true, precededBy: candidate };
+    }
     position.lastCandleAt = candle.closeAt;
     return { event: candidate, applied: true };
   }
 
-  const estimatedHigh = netLiquidationValue(position, candle.high, estimateLiquidity);
+  const estimatedHigh = netLiquidationValue(position, candle.high, valuationLiquidity);
   const highWater = Math.max(Number(position.highWaterNetUsdc || 0), estimatedHigh || 0);
   const trigger = highWater * (1 - TRAILING_DRAWDOWN_RATE);
-  const estimatedLow = netLiquidationValue(position, candle.low, estimateLiquidity);
+  const estimatedLow = netLiquidationValue(position, candle.low, valuationLiquidity);
   if (estimatedLow > trigger) {
     position.highWaterNetUsdc = highWater;
     position.lastCandleAt = candle.closeAt;
     return { event: null, applied: true };
   }
-  const liquidity = finite(exitLiquidity);
   if (!(liquidity > 0)) return { event: 'TRAILING_DRAWDOWN', applied: false, pending: 'EXIT_LIQUIDITY' };
   const target = thresholdPrice(position, trigger, liquidity);
   const fillPrice = candle.open <= target ? candle.open : target;
@@ -163,14 +174,15 @@ export function applySafetyExit(position, { at, price, liquidity, tradable = tru
     position.closedAt = exitAt ?? Date.now();
     position.exitReason = String(code);
     position.realizedNetUsdc = Number(position.recoveredUsdc || 0) - Number(position.allocatedUsdc || PRINCIPAL_USDC);
-    position.conservativeReturn = -1;
+    position.conservativeReturn = position.realizedNetUsdc / Number(position.allocatedUsdc || PRINCIPAL_USDC);
   }
   return true;
 }
 
 export function applyTimeoutExit(position, { at, price, liquidity } = {}) {
   const exitAt = finite(at);
+  const targetAt = Number(position?.entry?.at || Infinity) + MAX_HOLD_MS;
   if (!position || !['OPEN', 'RUNNER'].includes(position.status) || exitAt === null
-    || exitAt < Number(position.entry?.at || Infinity) + MAX_HOLD_MS) return false;
+    || exitAt < targetAt || exitAt > targetAt + 60_000) return false;
   return applySafetyExit(position, { at: exitAt, price, liquidity, tradable: true, code: 'EXPERIMENT_TIMEOUT' });
 }
