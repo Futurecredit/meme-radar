@@ -1,5 +1,21 @@
 const NUMBER_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 
+export const DISCOVERY_EXPLICIT_RISK_CAP = 0.30;
+export const OBSERVATION_RULES = Object.freeze({
+  minimumClosedMinuteBars: 5,
+  maximumStalenessMinutes: 2,
+  minimumReturn5m: -0.12,
+  maximumReturn5m: 0.80,
+  maximumDrawdown: 0.25,
+  maximumVolumeConcentration: 0.65,
+  minimumActiveBars: 4
+});
+export const SELLABILITY_RULES = Object.freeze({
+  minimumSells5m: 2,
+  minimumSells24h: 10,
+  minimumDistinctRecentSellers: 5
+});
+
 function optionalNumber(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value !== 'string') return null;
@@ -151,17 +167,12 @@ export function discoveryScreen(row, config, nowSec = Date.now() / 1000) {
   else if (!(mc >= config.discoveryMinMarketCap && mc <= config.discoveryMaxMarketCap)) reasons.push('市值不在发现范围');
   if (liquidityValue === null) reasons.push('流动性数据未知');
   else if (liquidity < config.minLiquidity) reasons.push('流动性不足');
-  if (rug === null) reasons.push('rug风险数据未知');
-  else if (rug > 0.30) reasons.push('rug风险过高');
-  if (bundler === null) reasons.push('捆绑机器人数据未知');
-  else if (bundler > 0.30) reasons.push('捆绑机器人占比过高');
-  if (insider === null) reasons.push('内幕数据未知');
-  else if (insider > 0.30) reasons.push('内幕/老鼠仓占比过高');
-  if (wash === null) reasons.push('刷量数据未知');
-  else if (wash) reasons.push('检测到刷量');
+  if (rug !== null && rug > DISCOVERY_EXPLICIT_RISK_CAP) reasons.push('rug风险过高');
+  if (bundler !== null && bundler > DISCOVERY_EXPLICIT_RISK_CAP) reasons.push('捆绑机器人占比过高');
+  if (insider !== null && insider > DISCOVERY_EXPLICIT_RISK_CAP) reasons.push('内幕/老鼠仓占比过高');
+  if (wash === true) reasons.push('检测到刷量');
   if (lower(config.chain) !== 'sol') {
-    if (honeypot === null) reasons.push('貔貅数据未知');
-    else if (honeypot) reasons.push('检测到貔貅盘');
+    if (honeypot === true) reasons.push('检测到貔貅盘');
   }
   const priorityBand = mc >= config.priorityMinMarketCap && mc <= config.priorityMaxMarketCap;
   const volume = num(first(row.volume_1h, row.volume, row.volume_24h));
@@ -451,7 +462,7 @@ export function observeFiveMinutes(candles, nowMs = Date.now()) {
   const unique = [...new Map(valid.map(row => [row.time, row])).values()];
   const duplicateBars = valid.length - unique.length;
   const rows = unique.filter(row => row.time + 60_000 <= nowMs).sort((a, b) => a.time - b.time).slice(-10);
-  if (rows.length < 5) return {
+  if (rows.length < OBSERVATION_RULES.minimumClosedMinuteBars) return {
     pass: false, status: 'WAITING', reason: '不足5根有效且已收盘的1分钟K线', bars: rows.length,
     invalidBars, duplicateBars, continuous: false, fresh: false, unknownFields: ['candles']
   };
@@ -460,7 +471,7 @@ export function observeFiveMinutes(candles, nowMs = Date.now()) {
   const continuous = gapsMs.every(gap => Math.abs(gap - 60_000) <= 1_000);
   const latestClosedAt = firstFive.at(-1).time + 60_000;
   const stalenessMs = Math.max(0, nowMs - latestClosedAt);
-  const fresh = stalenessMs <= 2 * 60_000;
+  const fresh = stalenessMs <= OBSERVATION_RULES.maximumStalenessMinutes * 60_000;
   if (!continuous) return {
     pass: false, status: 'WAITING', reason: '最近K线不连续，等待完整5分钟窗口', bars: firstFive.length,
     invalidBars, duplicateBars, continuous, fresh, gapsMs, latestClosedAt, stalenessMs, unknownFields: ['candles.continuity']
@@ -480,12 +491,15 @@ export function observeFiveMinutes(candles, nowMs = Date.now()) {
   const decliningVolumeBars = volumes.slice(1).filter((value, index) => value < volumes[index]).length;
   const return5m = end / start - 1;
   const activeBars = volumes.filter(value => value > 0).length;
-  const pass = return5m >= -0.12 && return5m <= 0.80 && maxDrawdown <= 0.25 && volumeConcentration <= 0.65 && activeBars >= 4;
-  const reason = return5m < -0.12 ? '观察期跌幅过大'
-    : return5m > 0.80 ? '5分钟涨幅过大，拒绝追高'
-      : maxDrawdown > 0.25 ? '观察期最大回撤过大'
-        : volumeConcentration > 0.65 ? '成交集中在单根K线，疑似机器脉冲'
-          : activeBars < 4 ? '多数分钟无成交' : '5分钟盘面通过';
+  const pass = return5m >= OBSERVATION_RULES.minimumReturn5m && return5m <= OBSERVATION_RULES.maximumReturn5m
+    && maxDrawdown <= OBSERVATION_RULES.maximumDrawdown
+    && volumeConcentration <= OBSERVATION_RULES.maximumVolumeConcentration
+    && activeBars >= OBSERVATION_RULES.minimumActiveBars;
+  const reason = return5m < OBSERVATION_RULES.minimumReturn5m ? '观察期跌幅过大'
+    : return5m > OBSERVATION_RULES.maximumReturn5m ? '5分钟涨幅过大，拒绝追高'
+      : maxDrawdown > OBSERVATION_RULES.maximumDrawdown ? '观察期最大回撤过大'
+        : volumeConcentration > OBSERVATION_RULES.maximumVolumeConcentration ? '成交集中在单根K线，疑似机器脉冲'
+          : activeBars < OBSERVATION_RULES.minimumActiveBars ? '多数分钟无成交' : '5分钟盘面通过';
   return {
     pass, status: pass ? 'PASS' : 'FAIL', reason, bars: firstFive.length, return5m, maxDrawdown,
     volumeConcentration, totalVolume, activeBars, volumeChange, volumeTrend, decliningVolumeBars,
@@ -526,7 +540,9 @@ export function empiricalSellability({ info, discovery, traders, nowSec = Date.n
     sells24h === null ? 'sellability.sells24h' : null,
     historicalSellers.some(row => row.lastActiveAt === null) ? 'sellability.traderLastActiveAt' : null
   ].filter(Boolean);
-  const pass = unknownFields.length === 0 && sells5m >= 2 && sells24h >= 10 && distinctSellers >= 5;
+  const pass = unknownFields.length === 0 && sells5m >= SELLABILITY_RULES.minimumSells5m
+    && sells24h >= SELLABILITY_RULES.minimumSells24h
+    && distinctSellers >= SELLABILITY_RULES.minimumDistinctRecentSellers;
   return {
     pass, sells5m, sells24h, distinctSellers, historicalDistinctSellers, windowSec, unknownFields,
     evidenceType: 'recent_active_seller_proxy',
@@ -586,6 +602,20 @@ export function deepScreen({ discovery, audit, nowMs = Date.now() }, config) {
     marketBehavior: marketBehavior.pass
   };
   const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name);
+  const explicitFatalChecks = [
+    openSource === false ? 'openSource' : null,
+    (!isSol && ownerRenounced === false) || (isSol && (renouncedMint === false || renouncedFreezeAccount === false)) ? 'ownerRenounced' : null,
+    !isSol && explicitHoneypot ? 'notHoneypot' : null,
+    (buyTax !== null && buyTax > config.maxBuyTax) || (sellTax !== null && sellTax > config.maxSellTax) ? 'tax' : null,
+    !lpBurned && lockRate !== null && lockRate < config.minLpLockedRate ? 'lpLocked' : null,
+    rugRatio !== null && rugRatio > config.maxRugRatio ? 'rug' : null,
+    top10 !== null && top10 > config.maxTop10Rate ? 'concentration' : null,
+    !creatorClosed && devHold !== null && devHold > .01 ? 'dev' : null,
+    insider !== null && insider > config.maxInsiderRate ? 'insider' : null,
+    bundler !== null && bundler > config.maxBundlerRate ? 'bundler' : null,
+    sniperHold !== null && sniperHold > config.maxSniperHoldRate ? 'sniper' : null,
+    wash === true ? 'wash' : null
+  ].filter(Boolean);
   const chainPass = failed.length === 0;
   const honeypotEvidence = isSol ? 'SOL不使用EVM貔貅字段；以铸币和冻结权限为安全基线'
     : exactNotHoneypot ? 'GMGN明确非貔貅' : sellability.pass ? '经验卖出证据' : explicitHoneypot ? '检测到貔貅' : '未验证';
@@ -632,7 +662,7 @@ export function deepScreen({ discovery, audit, nowMs = Date.now() }, config) {
     ...(!isSol && honeypot === null && !sellability.pass ? sellability.unknownFields : [])
   ].filter(Boolean);
   return {
-    chainPass, failed, checks, wallets, observation, marketBehavior, sellability, honeypotEvidence,
+    chainPass, failed, explicitFatalChecks: [...new Set(explicitFatalChecks)], checks, wallets, observation, marketBehavior, sellability, honeypotEvidence,
     unknownFields: [...new Set(unknownFields)],
     blockingUnknownFields: [...new Set(blockingUnknownFields)],
     security: {

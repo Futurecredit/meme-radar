@@ -13,7 +13,7 @@ async function policyModule() {
   }
 }
 
-test('default policy preserves the 0.1.6 discovery, live and scan behavior', async () => {
+test('new installations default to the V2 first-wave discovery window', async () => {
   const { defaultPolicy } = await policyModule();
   assert.equal(typeof defaultPolicy, 'function');
   assert.deepEqual(defaultPolicy(), {
@@ -23,10 +23,10 @@ test('default policy preserves the 0.1.6 discovery, live and scan behavior', asy
       maxMarketCap: 150000,
       priorityMinMarketCap: 20000,
       priorityMaxMarketCap: 80000,
-      minLiquidity: 3000,
+      minLiquidity: 5000,
       strictLiquidity: 8000,
       minAgeMinutes: 5,
-      maxAgeMinutes: 10080
+      maxAgeMinutes: 60
     },
     live: {
       minMarketCap: 10000,
@@ -128,10 +128,10 @@ test('validated policy is cloned and converted to one immutable runtime snapshot
     discoveryMaxMarketCap: 250000,
     priorityMinMarketCap: 20000,
     priorityMaxMarketCap: 80000,
-    minLiquidity: 3000,
+    minLiquidity: 5000,
     strictLiquidity: 8000,
     minAgeSec: 300,
-    maxAgeSec: 604800,
+    maxAgeSec: 3600,
     scanIntervalMs: 45000,
     maxDeepAuditsPerCycle: 6
   });

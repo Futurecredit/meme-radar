@@ -30,20 +30,60 @@ test('factor lab API paginates allowlisted views and protects control writes', a
   lab.state.trades.push({
     id: 'trade-1', chain: 'bsc', address: '0x0000000000000000000000000000000000000001', symbol: 'DOG',
     cohort: 'signal', signalAt: 100, strategyVersion: 'v1', chaseRisk: false,
+    twitter: 'dog_coin', website: 'https://dog.example', gmgnUrl: 'https://gmgn.ai/bsc/token/0x0000000000000000000000000000000000000001',
     factors: { marketCap: 40_000, liquidity: 10_000, secret: 'do-not-leak' },
     entry: { at: 200, price: 1, targetAt: 200 }, samples: { m5: { netReturn: .1, conservativeReturn: .1, privateKey: 'do-not-leak' } },
+    status: 'OPEN', allocatedUsdc: 100, recoveredUsdc: 0, remainingUnits: 90,
+    path: { schemaVersion: 1, firstAt: 200, lastAt: 900_000, observedBars: 12, expectedBars: 15,
+      missingBars: 3, coverage: .8, continuous: false, mfeRate: .2, mfeAt: 600_000,
+      maeRate: -.1, maeAt: 300_000, maxDrawdownRate: -.15, lastFailureCode: 'TIMEOUT',
+      bars: [{ close: 99 }], providerError: 'do-not-leak', absolutePath: 'D:\\secret' },
+    cashflows: [{ at: 200, kind: 'ENTRY', units: 90, price: 1, netUsdc: -100, secret: 'do-not-leak' }],
     raw: 'do-not-leak'
   });
+  lab.state.trades.push({
+    id: 'sample-1', chain: 'bsc', address: '0x0000000000000000000000000000000000000002',
+    symbol: 'CTL', cohort: 'control', notionalUsdc: 0, signalAt: 101, strategyVersion: 'v1',
+    factors: {}, entry: { targetAt: 300 }, samples: {}
+  });
+  lab.state.reports.push({ id: 'report-1', type: 'DAILY', at: 500, completed15m: 1,
+    strategyVersion: 'v1', capital: { allocatedUsdc: 100 }, exits: {}, horizons: {}, raw: 'do-not-leak' });
   lab.state.history.push({ at: 2, type: 'TEST', strategyVersion: 'v1', raw: 'do-not-leak' });
   lab.save();
-  const state = { value: { activeChain: 'bsc', status: 'RUNNING', supportedChains: config.supportedChains, candidates: [], chainStates: {}, factorLabSummary: lab.summary() } };
+  const state = { value: { activeChain: 'bsc', status: 'RUNNING', supportedChains: config.supportedChains, candidates: [], chainStates: {},
+    factorLabSummary: lab.summary(), funnelSummary: {
+      counts: { discovered: 9, prequalified: 5, deepAudited: 4, formalCandidates: 1, experimentalSignals: 2, controls: 1, hardRejects: 1 },
+      lossReasons: [{ reason: '流动性不足', count: 4, secret: 'do-not-leak' }]
+    } } };
   const server = createServer({ state, controls, factorLab: lab, settings: { ...config, stateDir: dir, publicDir: config.publicDir } });
 
-  const trades = await dispatch(server, 'GET', '/api/factor-lab?view=trades&chain=bsc&limit=1');
+  const trades = await dispatch(server, 'GET', '/api/factor-lab?view=trades&chain=bsc&cohort=signal&limit=1');
   assert.equal(trades.status, 200);
   assert.equal(trades.body.rows.length, 1);
   assert.equal(trades.body.rows[0].samples.m5.netReturn, .1);
-  assert.doesNotMatch(JSON.stringify(trades.body), /do-not-leak|privateKey|raw/);
+  assert.doesNotMatch(JSON.stringify(trades.body), /do-not-leak|privateKey|"raw"/);
+  const positions = await dispatch(server, 'GET', '/api/factor-lab?view=positions&chain=bsc&limit=10');
+  assert.equal(positions.status, 200);
+  assert.equal(positions.body.rows.length, 1);
+  assert.equal(positions.body.rows[0].allocatedUsdc, 100);
+  assert.equal(positions.body.rows[0].cashflows[0].kind, 'ENTRY');
+  assert.deepEqual(positions.body.rows[0].path, {
+    schemaVersion: 1, historicalUnavailable: false, firstAt: 200, lastAt: 900_000,
+    observedBars: 12, expectedBars: 15, missingBars: 3, coverage: .8, continuous: false,
+    mfeRate: .2, mfeAt: 600_000, maeRate: -.1, maeAt: 300_000,
+    maxDrawdownRate: -.15, lastFailureCode: 'TIMEOUT'
+  });
+  assert.equal(positions.body.rows[0].twitter, 'dog_coin');
+  assert.equal(positions.body.rows[0].website, 'https://dog.example/');
+  assert.match(positions.body.rows[0].gmgnUrl, /^https:\/\/gmgn\.ai\//);
+  const samples = await dispatch(server, 'GET', '/api/factor-lab?view=samples&chain=bsc&limit=10');
+  assert.equal(samples.status, 200);
+  assert.equal(samples.body.rows.length, 1);
+  assert.equal(samples.body.rows[0].notionalUsdc, 0);
+  const reports = await dispatch(server, 'GET', '/api/factor-lab?view=reports&limit=10');
+  assert.equal(reports.status, 200);
+  assert.equal(reports.body.rows[0].type, 'DAILY');
+  assert.doesNotMatch(JSON.stringify({ positions: positions.body, samples: samples.body, reports: reports.body }), /do-not-leak|secret|"raw"|"bars"|absolutePath|providerError/);
   assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=unknown')).status, 400);
   assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&wat=1')).status, 400);
   assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&limit=10junk')).status, 400);
@@ -63,11 +103,25 @@ test('status/export include sanitized factor lab data and manual policy save cre
   const controls = new RadarControls(dir, config.supportedChains, 'bsc');
   const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1_000 });
   const baseline = lab.state.champion.version;
-  const state = { value: { activeChain: 'bsc', status: 'RUNNING', supportedChains: config.supportedChains, candidates: [], chainStates: {}, factorLabSummary: lab.summary() } };
+  const state = { value: { activeChain: 'bsc', status: 'RUNNING', supportedChains: config.supportedChains, candidates: [], chainStates: {},
+    factorLabSummary: lab.summary(), funnelSummary: {
+      counts: { discovered: 9, prequalified: 5, deepAudited: 4, formalCandidates: 1, experimentalSignals: 2, controls: 1, hardRejects: 1 },
+      lossReasons: [{ reason: '流动性不足', count: 4, secret: 'do-not-leak' }]
+    } } };
   const server = createServer({ state, controls, factorLab: lab, settings: { ...config, stateDir: dir, publicDir: config.publicDir } });
 
   const status = await dispatch(server, 'GET', '/api/status');
   assert.equal(status.body.factorLabSummary.championVersion, baseline);
+  assert.deepEqual(status.body.factorLabSummary.portfolio, {
+    initialUsdc: 1000, stakeUsdc: 50, maxOpen: 5,
+    epochId: lab.state.portfolioEpoch.id,
+    epochStartedAt: 1000, costModelVersion: 3, fixedCostRate: 0.05,
+    cashBalanceUsdc: 1000, availableCashUsdc: 1000, deployedUsdc: 0, reservedUsdc: 0,
+    bookEquityUsdc: 1000, turnoverUsdc: 0, openPositions: 0, reservedPositions: 0,
+    availableSlots: 5, skippedCount: 0
+  });
+  assert.equal(status.body.funnelSummary.counts.experimentalSignals, 2);
+  assert.deepEqual(status.body.funnelSummary.lossReasons[0], { reason: '流动性不足', count: 4 });
   const changed = defaultPolicy(); changed.discovery.minMarketCap = 11_000;
   const saved = await dispatch(server, 'POST', '/api/policy', { policy: changed });
   assert.equal(saved.status, 200);
@@ -78,4 +132,36 @@ test('status/export include sanitized factor lab data and manual policy save cre
   assert.ok(exported.body.factorLab);
   assert.ok(Array.isArray(exported.body.factorLab.aggregates));
   assert.doesNotMatch(JSON.stringify(exported.body.factorLab), /api.?key|private.?key|secret|raw/i);
+});
+
+test('status exposes only allowlisted optimization quality fields', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-quality-api-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const controls = new RadarControls(dir, config.supportedChains, 'bsc');
+  const optimization = {
+    phase: 'DATA_TRUST', collectOnly: true, canGenerateCandidate: false, canPromote: false,
+    primaryBlocker: 'MATCHED_PAIRS', reasons: ['MATCHED_PAIRS', 'PATH_COVERAGE', 'SECRET_REASON'],
+    completed15m: 22, matchedPairs: 3, pathCoverage: 0.75, sourceFailures: 0, integrityFailures: 1,
+    coverage: { m5: { eligible: 25, completed: 22, missing: 3, rate: 0.88, raw: 'forbidden' },
+      m10: { eligible: 24, completed: 20, missing: 4, rate: 0.833 },
+      m15: { eligible: 22, completed: 18, missing: 4, rate: 0.818 } },
+    targets: { completed15m: 100, matchedPairs: 40, horizonCoverage: 0.8, pathCoverage: 0.8, privateKey: 'forbidden' },
+    remaining: { completed15m: 78, matchedPairs: 37, horizonCoverage: 0, pathCoverage: 0.05, secret: 'forbidden' },
+    raw: 'forbidden', privateKey: 'forbidden', unknown: { providerPayload: 'forbidden' }
+  };
+  const state = { value: { activeChain: 'bsc', status: 'RUNNING', supportedChains: config.supportedChains,
+    candidates: [], chainStates: {}, factorLabSummary: { enabled: true, optimization } } };
+  const server = createServer({ state, controls, settings: { ...config, stateDir: dir, publicDir: config.publicDir } });
+  const status = await dispatch(server, 'GET', '/api/status');
+  assert.deepEqual(status.body.factorLabSummary.optimization, {
+    phase: 'DATA_TRUST', collectOnly: true, canGenerateCandidate: false, canPromote: false,
+    primaryBlocker: 'MATCHED_PAIRS', reasons: ['MATCHED_PAIRS', 'PATH_COVERAGE'],
+    completed15m: 22, matchedPairs: 3, pathCoverage: 0.75, sourceFailures: 0, integrityFailures: 1,
+    coverage: { m5: { eligible: 25, completed: 22, missing: 3, rate: 0.88 },
+      m10: { eligible: 24, completed: 20, missing: 4, rate: 0.833 },
+      m15: { eligible: 22, completed: 18, missing: 4, rate: 0.818 } },
+    targets: { completed15m: 100, matchedPairs: 40, horizonCoverage: 0.8, pathCoverage: 0.8 },
+    remaining: { completed15m: 78, matchedPairs: 37, horizonCoverage: 0, pathCoverage: 0.05 }
+  });
+  assert.doesNotMatch(JSON.stringify(status.body), /forbidden|privateKey|providerPayload|SECRET_REASON/);
 });

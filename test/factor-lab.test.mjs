@@ -14,6 +14,7 @@ import {
   dueShadowJobs,
   evaluatePromotion,
   matchControl,
+  reconcileControlMatches,
   strategyPerformance,
   comparisonMetrics,
   shadowReturn
@@ -41,7 +42,7 @@ function candidate(overrides = {}) {
   };
 }
 
-test('shadow trade enters on first completed minute and applies 3% plus liquidity impact', () => {
+test('shadow trade applies the fixed 5% envelope plus dynamic liquidity impact', () => {
   const trade = createShadowTrade(candidate(), { cohort: 'signal', signalAt: 61_000, policy, strategy: defaultSoftStrategy(policy) });
   assert.equal(trade.entry.targetAt, 120_000);
   assert.equal(dueShadowJobs([trade], 119_999).length, 0);
@@ -51,9 +52,36 @@ test('shadow trade enters on first completed minute and applies 3% plus liquidit
   assert.equal(trade.entry.price, 1);
   const five = dueShadowJobs([trade], 420_000).find(job => job.key === 'm5');
   applyPriceSample(trade, five, { at: 420_000, price: 1.1 });
-  assert.ok(Math.abs(trade.samples.m5.netReturn - 0.02644) < 1e-9);
-  assert.equal(trade.samples.m5.fixedCostRate, 0.03);
+  assert.ok(Math.abs(trade.samples.m5.netReturn - 0.004278275) < 1e-9);
+  assert.equal(trade.samples.m5.fixedCostRate, 0.05);
   assert.ok(Math.abs(trade.samples.m5.dynamicCostRate - 0.0396) < 1e-9);
+});
+
+test('shadow signal freezes safe public links and duplicate audits only fill missing metadata', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-links-'));
+  try {
+    const lab = new FactorLab(dir, { policy, now: () => 1 });
+    const trade = lab.recordCandidate(candidate({
+      social: { twitter: '' }, info: { website: '' }, gmgnUrl: ''
+    }), { now: 1 });
+    assert.equal(trade.twitter, '');
+
+    const duplicate = lab.recordCandidate(candidate({
+      social: { twitter: '@dog_coin' },
+      info: { website: 'https://dog.example/path' },
+      gmgnUrl: 'https://gmgn.ai/sol/token/11111111111111111111111111111111'
+    }), { now: 2 });
+    assert.equal(duplicate.id, trade.id);
+    const row = lab.query({ view: 'positions', limit: '10' }).rows[0];
+    assert.deepEqual({ twitter: row.twitter, website: row.website, gmgnUrl: row.gmgnUrl }, {
+      twitter: 'dog_coin',
+      website: 'https://dog.example/path',
+      gmgnUrl: 'https://gmgn.ai/sol/token/11111111111111111111111111111111'
+    });
+
+    lab.recordCandidate(candidate({ social: { twitter: '@replacement' } }), { now: 3 });
+    assert.equal(lab.query({ view: 'positions', limit: '10' }).rows[0].twitter, 'dog_coin');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('late or missing prices are never backfilled and confirmed untradeable is conservative -100%', () => {
@@ -81,6 +109,65 @@ test('chase risk is retained and a near WAIT_RECHECK control is matched once', (
   assert.equal(matchControl(signal, controls), null);
 });
 
+test('control matching works when the control arrives after the signal', () => {
+  const strategy = defaultSoftStrategy(policy);
+  const signal = createShadowTrade(candidate(), {
+    cohort: 'signal', signalAt: 100_000, policy, strategy
+  });
+  const control = createShadowTrade(candidate({
+    address: '22222222222222222222222222222222', status: 'WAIT_RECHECK', marketCap: 42_000
+  }), { cohort: 'control', signalAt: 105_000, policy, strategy });
+  const pairs = reconcileControlMatches([signal, control]);
+  assert.deepEqual(pairs.map(row => [row.signalId, row.controlId]), [[signal.id, control.id]]);
+  assert.equal(signal.matchedTradeId, control.id);
+  assert.equal(control.matchedTradeId, signal.id);
+});
+
+test('matching is deterministic and never reuses a control', () => {
+  const strategy = defaultSoftStrategy(policy);
+  const build = () => {
+    const near = createShadowTrade(candidate({ address: '22222222222222222222222222222222', marketCap: 41_000 }), {
+      cohort: 'signal', signalAt: 100_000, policy, strategy
+    });
+    const far = createShadowTrade(candidate({ address: '33333333333333333333333333333333', marketCap: 60_000 }), {
+      cohort: 'signal', signalAt: 100_000, policy, strategy
+    });
+    const control = createShadowTrade(candidate({
+      address: '44444444444444444444444444444444', status: 'WAIT_RECHECK', marketCap: 42_000
+    }), { cohort: 'control', signalAt: 105_000, policy, strategy });
+    return { near, far, control };
+  };
+  const first = build();
+  const firstPairs = reconcileControlMatches([first.far, first.control, first.near]);
+  assert.deepEqual(firstPairs.map(row => [row.signalId, row.controlId]), [[first.near.id, first.control.id]]);
+  assert.equal(first.far.matchedTradeId, undefined);
+
+  const second = build();
+  const secondPairs = reconcileControlMatches([second.near, second.control, second.far]);
+  assert.deepEqual(secondPairs.map(row => [row.signalId, row.controlId]), [[second.near.id, second.control.id]]);
+  assert.equal(second.far.matchedTradeId, undefined);
+});
+
+test('FactorLab reconciles a late control and preserves the pair across restart', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-late-control-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let lab = new FactorLab(dir, { policy, now: () => 100_000 });
+  const signal = lab.recordCandidate(candidate(), { now: 100_000 });
+  assert.equal(signal.matchedTradeId, undefined);
+  const control = lab.recordCandidate(candidate({
+    address: '22222222222222222222222222222222', status: 'WAIT_RECHECK', marketCap: 42_000
+  }), { now: 105_000 });
+  assert.equal(signal.matchedTradeId, control.id);
+  assert.equal(control.matchedTradeId, signal.id);
+
+  lab = new FactorLab(dir, { policy, now: () => 110_000 });
+  const restoredSignal = lab.state.trades.find(row => row.id === signal.id);
+  const restoredControl = lab.state.trades.find(row => row.id === control.id);
+  assert.equal(restoredSignal.matchedTradeId, restoredControl.id);
+  assert.equal(restoredControl.matchedTradeId, restoredSignal.id);
+  assert.deepEqual(reconcileControlMatches(lab.state.trades), []);
+});
+
 test('controls that later become signals are excluded and samples are versioned per strategy', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-contamination-'));
   try {
@@ -88,15 +175,20 @@ test('controls that later become signals are excluded and samples are versioned 
     const control = lab.recordCandidate(candidate({ status: 'WAIT_RECHECK' }), { now: 1 });
     const nearby = lab.recordCandidate(candidate({ address: '22222222222222222222222222222222' }), { now: 2 });
     assert.equal(nearby.matchedTradeId, control.id);
+    const replacement = lab.recordCandidate(candidate({
+      address: '33333333333333333333333333333333', status: 'WAIT_RECHECK', marketCap: 42_000
+    }), { now: 3 });
+    assert.equal(replacement.matchedTradeId, undefined);
 
-    lab.recordCandidate(candidate({ status: 'X_REVIEW' }), { now: 3 });
-    assert.equal(control.contaminatedAt, 3);
+    lab.recordCandidate(candidate({ status: 'X_REVIEW', marketCap: 100_000 }), { now: 4 });
+    assert.equal(control.contaminatedAt, 4);
     assert.equal(control.matchedTradeId, undefined);
-    assert.equal(nearby.matchedTradeId, undefined);
+    assert.equal(nearby.matchedTradeId, replacement.id);
+    assert.equal(replacement.matchedTradeId, nearby.id);
 
     const firstVersionCount = lab.state.trades.filter(row => row.cohort === 'signal').length;
-    lab.manualBaseline({ ...policy, discovery: { ...policy.discovery, minMarketCap: 11_000 } }, 4);
-    lab.recordCandidate(candidate({ address: '22222222222222222222222222222222' }), { now: 5 });
+    lab.manualBaseline({ ...policy, discovery: { ...policy.discovery, minMarketCap: 11_000 } }, 5);
+    lab.recordCandidate(candidate({ address: '22222222222222222222222222222222' }), { now: 6 });
     assert.equal(lab.state.trades.filter(row => row.cohort === 'signal').length, firstVersionCount + 1);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -261,7 +353,7 @@ test('promotion metrics require completed signal-control pairs and bootstrap who
   assert.equal(metrics.bootstrapStrata >= 1, true);
 });
 
-test('automationTick promotes only from future completed signal-control populations', () => {
+test('automationTick remains collect-only even with a promotion-ready challenger', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-automatic-e2e-'));
   try {
     const lab = new FactorLab(dir, { policy, now: () => 1 });
@@ -288,11 +380,18 @@ test('automationTick promotes only from future completed signal-control populati
       }
       lab.state.trades.push(signal, control);
     }
+    const before = structuredClone({
+      champion: lab.state.champion,
+      challenger: lab.state.challenger,
+      history: lab.state.history
+    });
+    lab.state.autoPromotionEnabled = true;
     const result = lab.automationTick(start + span + 60 * 60_000);
-    assert.equal(result.action, 'promoted');
-    assert.equal(result.metrics.completed15m, 80);
-    assert.equal(result.metrics.matchedPairs, 80);
-    assert.ok(result.metrics.bootstrapLower > 0);
+    assert.equal(result.action, 'collect_only');
+    assert.equal(result.quality.collectOnly, true);
+    assert.deepEqual(lab.state.champion, before.champion);
+    assert.deepEqual(lab.state.challenger, before.challenger);
+    assert.deepEqual(lab.state.history, before.history);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -310,7 +409,8 @@ test('low coverage keeps a challenger collecting and malformed persisted strateg
     fs.writeFileSync(path.join(dir, 'factor-lab.json'), JSON.stringify({ version: 1, champion: null, trades: [], history: [] }));
     const repaired = new FactorLab(dir, { policy, now: () => 4 });
     assert.ok(repaired.effectiveStrategy());
-    assert.equal(repaired.state.history.at(-1).type, 'STATE_REPAIRED');
+    assert.ok(repaired.state.history.some(item => item.type === 'STATE_REPAIRED'));
+    assert.equal(repaired.state.history.at(-1).type, 'PORTFOLIO_EPOCH_STARTED');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -68,7 +68,7 @@ test('六语切换持久化并支持阿拉伯语RTL', () => {
   assert.match(html, /document\.documentElement\.dir = currentLocale === 'ar' \? 'rtl' : 'ltr'/);
   assert.match(html, /html\[dir="rtl"\]/);
   assert.match(html, /data-i18n="appTitle"/);
-  assert.match(html, /data-i18n="auditTitle"/);
+  assert.match(html, /data-i18n="screeningAuditTitle"/);
   assert.match(html, /t\(statusKeys\[data\.status\]/);
   assert.doesNotMatch(html, /GMGN多链候选雷达 · 只扫描、只筛选、永不下单/);
 });
@@ -105,12 +105,14 @@ test('多链切换仅向本地后端提交白名单链标识', () => {
   assert.match(html, /renderChainSwitcher\(null\)/);
 });
 
-test('页面不再公开展示严格筛选规则', () => {
-  assert.doesNotMatch(html, /严格筛选标准/);
-  assert.doesNotMatch(html, /Strict screening rules/);
-  assert.doesNotMatch(html, /data-i18n="criterion[1-8]"/);
-  assert.doesNotMatch(html, /\bcriteriaTitle\s*:/);
-  assert.doesNotMatch(html, /class="criteria"/);
+test('筛选规则按需在弹窗展示而不常驻占用首页', () => {
+  assert.match(html, /id="screeningRulesButton"/);
+  assert.match(html, /id="screeningRulesDialog"/);
+  assert.match(html, /function renderScreeningRules\(/);
+  assert.match(html, /data\.screeningRules/);
+  const dialog = html.match(/<dialog id="screeningRulesDialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+  assert.match(dialog, /id="screeningRulesContent"/);
+  assert.doesNotMatch(html.slice(0, html.indexOf('<dialog id="screeningRulesDialog"')), /严格筛选标准/);
 });
 
 test('GMGN密钥仅提交给同源接口且不会持久化或回显', () => {
@@ -267,5 +269,116 @@ test('固定周期因子实验室使用紧凑表格并按需加载明细', () =>
   const start = html.indexOf('id="factorLabPanel"');
   const end = html.indexOf('<article class="panel wide">', start + 30);
   assert.doesNotMatch(html.slice(start, end), /class="card/);
-  assert.match(html, /Number\.isFinite\(Number\(row\.entry\.price\)\)/);
+  assert.doesNotMatch(html.slice(start, end), /id="shadowLedgerPositions"/);
+});
+
+test('首页融合结果与运行状态、筛选漏斗与深审表格', () => {
+  for (const marker of ['resultDashboard', 'formalCandidatesPanel', 'funnelPanel', 'livePanel', 'factorLabPanel', 'managePanel', 'runtimePanel']) {
+    assert.match(html, new RegExp('id="' + marker + '"'));
+  }
+  const resultStart = html.indexOf('id="resultDashboard"');
+  const resultEnd = html.indexOf('</section>', resultStart);
+  assert.ok(html.indexOf('id="runtimePanel"', resultStart) < resultEnd);
+  const auditStart = html.indexOf('id="formalCandidatesPanel"');
+  const auditEnd = html.indexOf('</article>', auditStart);
+  assert.ok(html.indexOf('id="funnelPanel"', auditStart) < auditEnd);
+  assert.match(html, /#resultDashboard\s*{[^}]*order:\s*3/);
+  assert.match(html, /#formalCandidatesPanel\s*{[^}]*order:\s*4/);
+  assert.match(html, /#livePanel\s*{[^}]*order:\s*6/);
+  assert.match(html, /#factorLabPanel\s*{[^}]*order:\s*7/);
+  assert.match(html, /#managePanel\s*{[^}]*order:\s*8/);
+});
+
+test('顶部结果总览包含资金、固定周期、退出率和报告进度', () => {
+  for (const id of [
+    'labSignalCount', 'labAllocated', 'labOpenPositions', 'labUnrecovered',
+    'labPrincipalRecovered', 'labRealizedNet', 'labM5', 'labM10', 'labM15',
+    'labExitRates', 'labDataQuality', 'labReportProgress'
+  ]) assert.match(html, new RegExp('id="' + id + '"'));
+  assert.match(html, /function renderResultDashboard/);
+  assert.match(html, /summary.capital/);
+  assert.match(html, /summary.reportProgress/);
+});
+
+test('审计阶段标签可筛选全部深审状态且逐币可查看判定依据', () => {
+  const start = html.indexOf('function renderCandidates');
+  const end = html.indexOf('function activeChain', start);
+  assert.doesNotMatch(html.slice(start, end), /backendDisposition\(row\) === 'chain'\s*&&/);
+  assert.match(html, /id="funnelCounts"/);
+  assert.match(html, /id="funnelReasons"/);
+  assert.match(html, /function renderFunnel/);
+  assert.match(html, /data-funnel-filter/);
+  assert.match(html, /id="candidateWhyDialog"/);
+  assert.match(html, /data-action="why"/);
+  assert.match(html, /function openCandidateWhy\(/);
+  const funnelStart = html.indexOf('function renderFunnel');
+  const funnelEnd = html.indexOf('function ruleLimit', funnelStart);
+  assert.doesNotMatch(html.slice(funnelStart, funnelEnd), /style=/);
+  assert.match(html, /funnel-strip steps-/);
+});
+
+test('实验室分离真实仓位、未投入本金参考样本和阶段报告', () => {
+  for (const id of ['shadowLedgerPositions', 'factorLabSamples', 'factorLabReports']) {
+    assert.match(html, new RegExp('id="' + id + '"'));
+  }
+  assert.match(html, /view=positions/);
+  assert.match(html, /view=samples/);
+  assert.match(html, /view=reports/);
+  assert.match(html, /未投入模拟本金/);
+  assert.match(html, /待入场/);
+  assert.match(html, /function renderShadowLedger\(/);
+  assert.match(html, /Number\(row\.allocatedUsdc\) > 0/);
+});
+
+test('真实影子仓位常驻结果总览并展示全链买卖时间价格、现金流和研究入口', () => {
+  const dashboardStart = html.indexOf('id="resultDashboard"');
+  const dashboardEnd = html.indexOf('</section>', dashboardStart);
+  const dashboard = html.slice(dashboardStart, dashboardEnd);
+  assert.match(dashboard, /id="shadowLedgerPositions"/);
+  assert.match(dashboard, /id="shadowLedgerSummary"/);
+  assert.match(html, /\/api\/factor-lab\?view=positions&limit=100/);
+  assert.doesNotMatch(html, /view=positions&limit=100&chain=/);
+  assert.match(html, /function positionEntry\(/);
+  assert.match(html, /function positionExitCashflows\(/);
+  assert.match(html, /function renderShadowLedger\(/);
+  assert.match(html, /PRINCIPAL_RECOVERY/);
+  assert.match(html, /data-shadow-copy/);
+  assert.match(html, /actionLinks\(\{ address: row\.address, chain: row\.chain, symbol: row\.symbol, gmgnUrl: row\.gmgnUrl, info: \{ website: row\.website, twitter: row\.twitter \} \}\)/);
+});
+
+test('有限本金账户区分本金、现金、占用、权益、累计成交额和容量跳过', () => {
+  for (const id of ['portfolioInitial', 'portfolioEpoch', 'portfolioEquity', 'portfolioCash', 'portfolioDeployed', 'portfolioTurnover', 'portfolioSlots', 'portfolioSkipped']) {
+    assert.match(html, new RegExp('id="' + id + '"'));
+  }
+  assert.match(html, /1000\s*USDC/);
+  assert.match(html, /50U\/笔/);
+  assert.match(html, /最多5仓/);
+  assert.match(html, /data-i18n="portfolioInitialNote"/);
+  assert.match(html, /data-i18n="portfolioDeployedNote"/);
+  assert.match(html, /资金\/容量跳过/);
+  assert.match(html, /portfolio\.availableCashUsdc/);
+  assert.match(html, /portfolio\.skippedCount/);
+  assert.match(html, /portfolio\.epochStartedAt/);
+  assert.match(html, /固定成本5%.*低流动性.*动态滑点/);
+  assert.match(html, /portfolio\.epochId/);
+  assert.match(html, /row\.portfolioEpochId === currentEpochId/);
+  assert.match(html, /历史账期/);
+});
+
+test('持续优化决策板先展示当前问题和下一动作且不常驻明细', () => {
+  for (const id of [
+    'optimizationState', 'optimizationProblem', 'optimizationNextAction',
+    'optimizationProgress', 'optimizationRiskState'
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /collectOnly/);
+  assert.match(html, /匹配对照不足/);
+  assert.match(html, /自动晋级暂停.*影子采集继续/);
+  assert.match(html, /<details[^>]*id="optimizationDetails"/);
+});
+
+test('影子仓位区展示待入场预留和失败原因而不是隐藏它们', () => {
+  assert.match(html, /pendingRows/);
+  assert.match(html, /ENTRY_UNAVAILABLE/);
+  assert.match(html, /待入场预留/);
+  assert.match(html, /入场数据缺失/);
 });

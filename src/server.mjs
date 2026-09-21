@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeGmgnApiKey } from './gmgn-key-store.mjs';
 import { secondaryChainSupport } from './secondary.mjs';
+import { screeningRuleManifest } from './screening-rules.mjs';
 
 const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const CHAIN_IDS = new Set(['sol', 'bsc', 'base', 'eth', 'robinhood', 'arc', 'stable']);
@@ -142,6 +143,8 @@ function publicCandidate(row = {}) {
     twitter: text(row.twitter, 80),
     gmgnUrl: externalUrl(row.gmgnUrl),
     status: text(row.status, 32),
+    experimentEligible: row.experimentEligible === true,
+    evidenceTier: ['formal', 'incomplete'].includes(row.evidenceTier) ? row.evidenceTier : '',
     auditedAt: finite(row.auditedAt),
     staleAt: finite(row.staleAt),
     reviewRevision: text(row.reviewRevision, 64),
@@ -344,6 +347,22 @@ function publicAuditQueueStats(source = {}) {
   ]);
 }
 
+function publicFunnelSummary(source = {}) {
+  return {
+    scopes: {
+      currentCycle: ['discovered', 'prequalified'],
+      recentAuditWindow: ['deepAudited', 'formalCandidates', 'experimentalSignals', 'controls', 'hardRejects']
+    },
+    counts: countSummary(source.counts || {}, [
+      'discovered', 'prequalified', 'deepAudited', 'formalCandidates',
+      'experimentalSignals', 'controls', 'hardRejects'
+    ]),
+    lossReasons: (Array.isArray(source.lossReasons) ? source.lossReasons : []).slice(0, 10).map(row => ({
+      reason: text(row?.reason, 80), count: finite(row?.count)
+    }))
+  };
+}
+
 function publicOutcomeSummary(source = {}) {
   return {
     ...countSummary(source, [
@@ -367,6 +386,43 @@ function publicOutcomeSummary(source = {}) {
   };
 }
 
+const PUBLIC_OPTIMIZATION_REASONS = new Set([
+  'SOURCE_INTEGRITY', 'MATCHED_PAIRS', 'PATH_COVERAGE', 'HORIZON_COVERAGE', 'COMPLETED_15M', 'DATA_READY'
+]);
+
+function publicOptimizationSummary(source = {}) {
+  const reason = value => {
+    const code = publicCode(value);
+    return PUBLIC_OPTIMIZATION_REASONS.has(code) ? code : '';
+  };
+  const coverage = Object.fromEntries(['m5', 'm10', 'm15'].map(key => {
+    const row = source.coverage?.[key] || {};
+    return [key, {
+      ...countSummary(row, ['eligible', 'completed', 'missing']),
+      rate: finiteOrNull(row.rate)
+    }];
+  }));
+  return {
+    phase: source.phase === 'DATA_TRUST' ? 'DATA_TRUST' : '',
+    collectOnly: source.collectOnly === true,
+    canGenerateCandidate: source.canGenerateCandidate === true,
+    canPromote: source.canPromote === true,
+    primaryBlocker: reason(source.primaryBlocker),
+    reasons: [...new Set((Array.isArray(source.reasons) ? source.reasons : []).map(reason).filter(Boolean))],
+    completed15m: finite(source.completed15m), matchedPairs: finite(source.matchedPairs),
+    pathCoverage: finiteOrNull(source.pathCoverage), sourceFailures: finite(source.sourceFailures),
+    integrityFailures: finite(source.integrityFailures), coverage,
+    targets: {
+      completed15m: finite(source.targets?.completed15m), matchedPairs: finite(source.targets?.matchedPairs),
+      horizonCoverage: finiteOrNull(source.targets?.horizonCoverage), pathCoverage: finiteOrNull(source.targets?.pathCoverage)
+    },
+    remaining: {
+      completed15m: finite(source.remaining?.completed15m), matchedPairs: finite(source.remaining?.matchedPairs),
+      horizonCoverage: finite(source.remaining?.horizonCoverage), pathCoverage: finite(source.remaining?.pathCoverage)
+    }
+  };
+}
+
 function publicFactorLabSummary(source = {}) {
   const horizons = {};
   for (const key of ['m5', 'm10', 'm15', 'm30', 'h1', 'h2', 'h24']) {
@@ -387,7 +443,35 @@ function publicFactorLabSummary(source = {}) {
     tracked: finite(source.tracked), signalCount: finite(source.signalCount), controlCount: finite(source.controlCount),
     hardRejectCount: finite(source.hardRejectCount), matchedPairs: finite(source.matchedPairs),
     lastPromotionAt: finite(source.lastPromotionAt), recoveredFromBackup: source.recoveredFromBackup === true,
-    disabledReason: publicCode(source.disabledReason), horizons
+    disabledReason: publicCode(source.disabledReason), horizons,
+    capital: {
+      positionCount: finite(source.capital?.positionCount), allocatedUsdc: finite(source.capital?.allocatedUsdc),
+      openPositions: finite(source.capital?.openPositions), unrecoveredPrincipalUsdc: finite(source.capital?.unrecoveredPrincipalUsdc),
+      recoveredPrincipalUsdc: finite(source.capital?.recoveredPrincipalUsdc),
+      principalRecovered: finite(source.capital?.principalRecovered), realizedNetUsdc: finite(source.capital?.realizedNetUsdc)
+    },
+    portfolio: {
+      initialUsdc: finite(source.portfolio?.initialUsdc), stakeUsdc: finite(source.portfolio?.stakeUsdc),
+      epochId: text(source.portfolio?.epochId, 64),
+      epochStartedAt: finite(source.portfolio?.epochStartedAt), costModelVersion: finite(source.portfolio?.costModelVersion),
+      fixedCostRate: finite(source.portfolio?.fixedCostRate),
+      maxOpen: finite(source.portfolio?.maxOpen), cashBalanceUsdc: finite(source.portfolio?.cashBalanceUsdc),
+      availableCashUsdc: finite(source.portfolio?.availableCashUsdc), deployedUsdc: finite(source.portfolio?.deployedUsdc),
+      reservedUsdc: finite(source.portfolio?.reservedUsdc), bookEquityUsdc: finite(source.portfolio?.bookEquityUsdc),
+      turnoverUsdc: finite(source.portfolio?.turnoverUsdc), openPositions: finite(source.portfolio?.openPositions),
+      reservedPositions: finite(source.portfolio?.reservedPositions), availableSlots: finite(source.portfolio?.availableSlots),
+      skippedCount: finite(source.portfolio?.skippedCount)
+    },
+    exits: Object.fromEntries(['stopRate', 'principalRecoveryRate', 'trailingRate', 'timeoutRate', 'safetyRate']
+      .map(key => [key, finiteOrNull(source.exits?.[key])])),
+    reportProgress: {
+      completed15m: finite(source.reportProgress?.completed15m),
+      nextStageCompleted15m: finite(source.reportProgress?.nextStageCompleted15m),
+      lastReportAt: finite(source.reportProgress?.lastReportAt),
+      nextStageEarliestAt: finite(source.reportProgress?.nextStageEarliestAt),
+      nextDailyAt: finite(source.reportProgress?.nextDailyAt)
+    },
+    optimization: publicOptimizationSummary(source.optimization)
   };
 }
 
@@ -398,6 +482,9 @@ function factorLabParameters(searchParams, supportedChains) {
     summary: new Set(['view']),
     factors: new Set(['view', 'chain', 'strategyVersion', 'horizon', 'limit', 'cursor']),
     trades: new Set(['view', 'chain', 'cohort', 'strategyVersion', 'horizon', 'result', 'limit', 'cursor']),
+    positions: new Set(['view', 'chain', 'strategyVersion', 'horizon', 'result', 'limit', 'cursor']),
+    samples: new Set(['view', 'chain', 'cohort', 'strategyVersion', 'horizon', 'result', 'limit', 'cursor']),
+    reports: new Set(['view', 'limit', 'cursor']),
     history: new Set(['view', 'limit', 'cursor'])
   };
   const allowed = allowedByView[view];
@@ -460,6 +547,7 @@ export function toPublicStatus(source = {}) {
     },
     sourceHealth: publicSourceHealth(source.sourceHealth),
     auditQueueStats: publicAuditQueueStats(source.auditQueueStats),
+    funnelSummary: publicFunnelSummary(source.funnelSummary),
     outcomeSummary: publicOutcomeSummary(source.outcomeSummary),
     policy: {
       chain: text(source.policy?.chain, 32),
@@ -858,7 +946,8 @@ export function createServer({ state, settings, controls, factorLab, switchChain
         coverage: Object.fromEntries([...CHAIN_IDS].map(id => [id, {
           dexScreener: Boolean(secondaryChainSupport.dexScreener[id]), goPlus: Boolean(secondaryChainSupport.goPlus[id])
         }])),
-        requestMetrics: countSummary(state.value.requestMetrics || {}, ['requests', 'cacheHits', 'rateLimits', 'cooldownUntil'])
+        requestMetrics: countSummary(state.value.requestMetrics || {}, ['requests', 'cacheHits', 'rateLimits', 'cooldownUntil']),
+        screeningRules: screeningRuleManifest(controls?.policy?.() || {}, settings, factorLab?.effectiveStrategy?.() || {})
       };
       if (url.pathname === '/api/export') {
         const scopes = { ...state.value.chainStates, [state.value.activeChain]: state.value };

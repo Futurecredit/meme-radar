@@ -2,12 +2,22 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicJson, readJsonWithBackup, tokenKey } from './local-store.mjs';
+import { FactorPathStore } from './factor-path-store.mjs';
+import { normalizePathCandles, summarizePath } from './factor-path.mjs';
+import { buildDataQualitySummary } from './factor-data-quality.mjs';
+import {
+  ENTRY_FIXED_COST_RATE, EXIT_FIXED_COST_RATE, EXIT_POLICY_VERSION,
+  MAX_HOLD_MS, POSITION_COST_MODEL_VERSION, applyExitCandle, applySafetyExit, applyTimeoutExit, openShadowPosition, positionLiquidityImpact
+} from './shadow-position.mjs';
 
-export const FACTOR_LAB_VERSION = 1;
+export const FACTOR_LAB_VERSION = 3;
 export const FACTOR_SCHEMA_VERSION = 1;
-export const COST_MODEL_VERSION = 1;
+export const COST_MODEL_VERSION = POSITION_COST_MODEL_VERSION;
 export const SHADOW_NOTIONAL_USDC = 100;
-export const FIXED_ROUND_TRIP_COST = 0.03;
+export const PORTFOLIO_INITIAL_USDC = 1_000;
+export const PORTFOLIO_STAKE_USDC = 50;
+export const PORTFOLIO_MAX_OPEN = 5;
+export const FIXED_ROUND_TRIP_COST = 0.05;
 export const SHADOW_HORIZONS = Object.freeze({
   m5: 5 * 60_000,
   m10: 10 * 60_000,
@@ -21,6 +31,8 @@ export const SHADOW_HORIZONS = Object.freeze({
 const DAY = 24 * 60 * 60_000;
 const RETENTION_MS = 90 * DAY;
 const MAX_TRADES = 5_000;
+const ENTRY_RESERVATION_TTL_MS = 5 * 60_000;
+const ENTRY_MAX_ATTEMPTS = 3;
 const MAIN_HORIZONS = Object.freeze(['m5', 'm10', 'm15']);
 const WEIGHTS = Object.freeze({ m5: 0.25, m10: 0.5, m15: 0.25 });
 const finite = value => Number.isFinite(Number(value)) ? Number(value) : null;
@@ -43,6 +55,30 @@ function hash(value) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function safePublicUrl(value, { gmgnOnly = false } = {}) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return '';
+    if (gmgnOnly && !['gmgn.ai', 'www.gmgn.ai'].includes(parsed.hostname.toLowerCase())) return '';
+    return parsed.href;
+  } catch { return ''; }
+}
+
+function safeTwitterHandle(value) {
+  let handle = String(value || '').trim();
+  handle = handle.replace(/^(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\//i, '').replace(/^@/, '');
+  if (handle.includes('/')) handle = handle.split('/')[0];
+  return /^[A-Za-z0-9_]{1,15}$/.test(handle) ? handle : '';
+}
+
+function publicLinkSnapshot(candidate = {}) {
+  return {
+    twitter: safeTwitterHandle(candidate.social?.twitter || candidate.info?.twitter || candidate.twitter),
+    website: safePublicUrl(candidate.info?.website || candidate.website),
+    gmgnUrl: safePublicUrl(candidate.gmgnUrl, { gmgnOnly: true })
+  };
 }
 
 export function defaultSoftStrategy(policy) {
@@ -211,13 +247,18 @@ export function liquidityImpact(liquidityUsd) {
   return clamp(SHADOW_NOTIONAL_USDC / Math.max((liquidity || 0) / 2, SHADOW_NOTIONAL_USDC), 0, 0.25);
 }
 
-export function shadowReturn({ entryPrice, exitPrice, entryLiquidity, exitLiquidity = entryLiquidity }) {
+export function shadowReturn({ entryPrice, exitPrice, entryLiquidity, exitLiquidity = entryLiquidity,
+  costModelVersion = COST_MODEL_VERSION }) {
   const entry = finite(entryPrice);
   const exit = finite(exitPrice);
   if (!(entry > 0) || !(exit > 0)) return -1;
+  const legacy = Number(costModelVersion) > 0 && Number(costModelVersion) < COST_MODEL_VERSION;
+  const entryRate = legacy ? 0.015 : ENTRY_FIXED_COST_RATE;
+  const exitRate = legacy ? 0.015 : EXIT_FIXED_COST_RATE;
   const entryImpact = liquidityImpact(entryLiquidity);
   const exitImpact = liquidityImpact(exitLiquidity);
-  return clamp((exit / entry) * (1 - entryImpact) * (1 - exitImpact) - 1 - FIXED_ROUND_TRIP_COST, -1, 1000);
+  return clamp((exit / entry) * (1 - entryRate) * (1 - entryImpact)
+    * (1 - exitRate) * (1 - exitImpact) - 1, -1, 1000);
 }
 
 function factorSnapshot(candidate) {
@@ -244,7 +285,10 @@ export function createShadowTrade(candidate, { cohort, signalAt = Date.now(), po
     chain: String(candidate.chain || ''),
     address: normalizedAddress,
     symbol: String(candidate.symbol || '?').slice(0, 30),
+    ...publicLinkSnapshot(candidate),
     cohort,
+    evidenceTier: cohort === 'signal' ? String(candidate.evidenceTier || (candidate.status === 'X_REVIEW' ? 'formal' : 'incomplete')) : 'reference',
+    notionalUsdc: cohort === 'signal' ? SHADOW_NOTIONAL_USDC : 0,
     exploration: exploration === true,
     signalAt,
     signalPrice: finite(candidate.price),
@@ -254,6 +298,7 @@ export function createShadowTrade(candidate, { cohort, signalAt = Date.now(), po
     strategy: frozenStrategy,
     factorSchemaVersion: FACTOR_SCHEMA_VERSION,
     costModelVersion: COST_MODEL_VERSION,
+    exitPolicyVersion: EXIT_POLICY_VERSION,
     factors: factorSnapshot(candidate),
     entry: { targetAt: entryTargetAt },
     chaseRisk: false,
@@ -283,13 +328,16 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     && Math.abs(Number(sample.at) - Number(job.targetAt)) <= 60_000;
   if (job.kind === 'entry') {
     if (!valid) return false;
-    trade.entry = {
-      targetAt: job.targetAt,
-      at: Number(sample.at),
-      price: Number(sample.price),
+    const entry = {
+      targetAt: job.targetAt, at: Number(sample.at), price: Number(sample.price),
       liquidity: finite(sample.liquidity) ?? trade.factors.liquidity,
       source: String(sample.source || 'GMGN_1M_CLOSE')
     };
+    const portfolioStatus = String(trade.portfolioStatus || '');
+    const portfolioFunded = !portfolioStatus || portfolioStatus === 'RESERVED';
+    if (trade.cohort === 'signal' && trade.legacyFixedHorizonOnly !== true && portfolioFunded) {
+      openShadowPosition(trade, entry);
+    } else trade.entry = entry;
     trade.chaseRisk = finite(trade.signalPrice) > 0
       && Math.abs(trade.entry.price / trade.signalPrice - 1) > 0.20;
     delete trade.retries?.entry;
@@ -311,12 +359,14 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     }
     return false;
   }
+  const legacyCost = Number(trade.costModelVersion) > 0 && Number(trade.costModelVersion) < COST_MODEL_VERSION;
   const entryImpact = liquidityImpact(trade.entry.liquidity);
   const exitLiquidity = finite(sample.liquidity) ?? trade.entry.liquidity;
   const exitImpact = liquidityImpact(exitLiquidity);
   const dynamicCostRate = 1 - (1 - entryImpact) * (1 - exitImpact);
   const grossReturn = Number(sample.price) / trade.entry.price - 1;
-  const netReturn = shadowReturn({ entryPrice: trade.entry.price, exitPrice: Number(sample.price), entryLiquidity: trade.entry.liquidity, exitLiquidity });
+  const netReturn = shadowReturn({ entryPrice: trade.entry.price, exitPrice: Number(sample.price),
+    entryLiquidity: trade.entry.liquidity, exitLiquidity, costModelVersion: trade.costModelVersion });
   trade.samples[job.key] = {
     targetAt: job.targetAt,
     at: Number(sample.at),
@@ -325,7 +375,7 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     liquidityEstimated: finite(sample.liquidity) === null,
     source: String(sample.source || 'GMGN_1M_CLOSE'),
     grossReturn,
-    fixedCostRate: FIXED_ROUND_TRIP_COST,
+    fixedCostRate: legacyCost ? 0.03 : FIXED_ROUND_TRIP_COST,
     dynamicCostRate,
     observedReturn: netReturn,
     conservativeReturn: netReturn,
@@ -335,8 +385,9 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
   return true;
 }
 
-function matchDistance(signal, control) {
-  if (signal.chain !== control.chain || control.matchedTradeId || control.contaminatedAt) return Infinity;
+function matchDistance(signal, control, { allowMatched = false } = {}) {
+  if (signal.chain !== control.chain || control.contaminatedAt
+    || (!allowMatched && (signal.matchedTradeId || control.matchedTradeId))) return Infinity;
   const age = Math.abs(signal.signalAt - control.signalAt);
   if (age > 10 * 60_000) return Infinity;
   const ratios = ['marketCap', 'liquidity', 'ageSec'].map(key => {
@@ -360,6 +411,57 @@ export function matchControl(signal, controls) {
   return control;
 }
 
+export function reconcileControlMatches(trades = []) {
+  const rows = (Array.isArray(trades) ? trades : []).filter(row => row?.id);
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const signals = rows.filter(row => row.cohort === 'signal');
+  const controls = rows.filter(row => row.cohort === 'control' && !row.contaminatedAt);
+  const usedSignals = new Set();
+  const usedControls = new Set();
+
+  for (const signal of [...signals].sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0)
+    || String(a.id).localeCompare(String(b.id)))) {
+    const control = byId.get(signal.matchedTradeId);
+    if (control?.cohort !== 'control' || control.contaminatedAt
+      || control.matchedTradeId !== signal.id
+      || !Number.isFinite(matchDistance(signal, control, { allowMatched: true }))
+      || usedControls.has(control.id)) continue;
+    usedSignals.add(signal.id);
+    usedControls.add(control.id);
+  }
+
+  for (const signal of signals) if (!usedSignals.has(signal.id)) delete signal.matchedTradeId;
+  for (const control of rows.filter(row => row.cohort === 'control')) {
+    if (!usedControls.has(control.id)) delete control.matchedTradeId;
+  }
+
+  const edges = [];
+  for (const signal of signals) {
+    if (usedSignals.has(signal.id)) continue;
+    for (const control of controls) {
+      if (usedControls.has(control.id)) continue;
+      const distance = matchDistance(signal, control, { allowMatched: true });
+      if (Number.isFinite(distance)) edges.push({ signal, control, distance });
+    }
+  }
+  edges.sort((a, b) => a.distance - b.distance
+    || Number(a.signal.signalAt || 0) - Number(b.signal.signalAt || 0)
+    || String(a.signal.id).localeCompare(String(b.signal.id))
+    || Number(a.control.signalAt || 0) - Number(b.control.signalAt || 0)
+    || String(a.control.id).localeCompare(String(b.control.id)));
+
+  const pairs = [];
+  for (const edge of edges) {
+    if (usedSignals.has(edge.signal.id) || usedControls.has(edge.control.id)) continue;
+    edge.signal.matchedTradeId = edge.control.id;
+    edge.control.matchedTradeId = edge.signal.id;
+    usedSignals.add(edge.signal.id);
+    usedControls.add(edge.control.id);
+    pairs.push({ signalId: edge.signal.id, controlId: edge.control.id, distance: edge.distance });
+  }
+  return pairs;
+}
+
 export function evaluatePromotion(metrics = {}) {
   const reasons = [];
   if (Number(metrics.completed15m) < 80) reasons.push('insufficient_signal_samples');
@@ -376,17 +478,43 @@ export function evaluatePromotion(metrics = {}) {
 
 function defaultState(policy, now) {
   const strategy = defaultSoftStrategy(policy);
+  const portfolioEpoch = createPortfolioEpoch(now);
   return {
     version: FACTOR_LAB_VERSION,
     autoPromotionEnabled: true,
     champion: { version: strategyFingerprint(strategy), strategy, activatedAt: now },
     previousChampion: null,
     challenger: null,
+    positions: [],
+    referenceSamples: [],
+    reports: [],
     trades: [],
     aggregates: [],
+    portfolioEpoch,
     history: [{ at: now, type: 'BASELINE_CREATED', strategyVersion: strategyFingerprint(strategy), reason: 'initial_policy' }],
     lastPromotionAt: 0,
     disabledReason: ''
+  };
+}
+
+function createPortfolioEpoch(now) {
+  return {
+    id: hash(`portfolio:${COST_MODEL_VERSION}:${now}`).slice(0, 24),
+    startedAt: Number(now),
+    costModelVersion: COST_MODEL_VERSION,
+    fixedCostRate: FIXED_ROUND_TRIP_COST
+  };
+}
+
+function normalizePortfolioEpoch(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !String(value.id || '') || finite(value.startedAt) === null
+    || Number(value.costModelVersion) !== COST_MODEL_VERSION) return null;
+  return {
+    id: String(value.id).slice(0, 64),
+    startedAt: Number(value.startedAt),
+    costModelVersion: COST_MODEL_VERSION,
+    fixedCostRate: FIXED_ROUND_TRIP_COST
   };
 }
 
@@ -400,7 +528,8 @@ function normalizePersistedStrategy(value) {
 function migrateState(raw, policy, now) {
   const base = defaultState(policy, now);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
-  let repaired = raw.version !== FACTOR_LAB_VERSION;
+  const sourceVersion = Number(raw.version);
+  let repaired = ![1, 2, FACTOR_LAB_VERSION].includes(sourceVersion);
   if (raw.champion?.strategy?.discovery && Object.hasOwn(raw.champion.strategy.discovery, 'strictLiquidity')) repaired = true;
   const championStrategy = normalizePersistedStrategy(raw.champion?.strategy);
   if (!championStrategy) repaired = true;
@@ -418,6 +547,71 @@ function migrateState(raw, policy, now) {
   if (raw.challenger && !challengerMutation) repaired = true;
   const history = Array.isArray(raw.history) ? raw.history.slice(-1_000) : base.history;
   if (repaired) history.push({ at: now, type: 'STATE_REPAIRED', strategyVersion: champion.version, reason: 'invalid_or_legacy_state' });
+  const legacyRows = raw.version === 1 && Array.isArray(raw.trades)
+    ? raw.trades.filter(row => row && typeof row === 'object').slice(-MAX_TRADES)
+      .map(row => ({ ...row, notionalUsdc: 0, legacyFixedHorizonOnly: true }))
+    : [];
+  const structuredState = [2, FACTOR_LAB_VERSION].includes(sourceVersion);
+  const positions = structuredState && Array.isArray(raw.positions)
+    ? raw.positions.filter(row => row && typeof row === 'object').slice(-MAX_TRADES).map(row => ({ ...row })) : [];
+  const referenceSamples = structuredState && Array.isArray(raw.referenceSamples)
+    ? raw.referenceSamples.filter(row => row && typeof row === 'object').slice(-MAX_TRADES).map(row => ({ ...row }))
+    : legacyRows;
+  if (sourceVersion === 2) {
+    const markUnavailable = row => {
+      if (!row.path && Object.values(row.samples || {}).some(Boolean)) {
+        row.path = { schemaVersion: 1, historicalUnavailable: true };
+      }
+    };
+    positions.forEach(markUnavailable);
+    referenceSamples.forEach(markUnavailable);
+    history.push({ at: now, type: 'STATE_MIGRATED', fromVersion: 2, toVersion: FACTOR_LAB_VERSION,
+      counts: { positions: positions.length, referenceSamples: referenceSamples.length,
+        reports: Array.isArray(raw.reports) ? raw.reports.length : 0,
+        aggregates: Array.isArray(raw.aggregates) ? raw.aggregates.length : 0 } });
+  }
+  const aggregates = Array.isArray(raw.aggregates) ? raw.aggregates.slice(-1_000) : [];
+  let portfolioMigrated = false;
+  for (const position of positions.sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0))) {
+    if (position.portfolioStatus) continue;
+    portfolioMigrated = true;
+    if (Number(position.allocatedUsdc) > 0) {
+      position.portfolioStakeUsdc = Number(position.allocatedUsdc);
+      position.portfolioStatus = ['OPEN', 'RUNNER', 'CLOSED'].includes(position.status) ? position.status : 'CLOSED';
+    } else if (position.entry?.missingKind) {
+      position.portfolioStakeUsdc = 0;
+      position.portfolioStatus = 'ENTRY_UNAVAILABLE';
+    } else if (position.entry?.price) {
+      position.portfolioStakeUsdc = 0;
+      position.portfolioStatus = 'SKIPPED_LEGACY';
+    } else {
+      const portfolio = portfolioSnapshot(positions, aggregates);
+      if (portfolio.availableSlots < 1) {
+        position.portfolioStakeUsdc = 0;
+        position.portfolioStatus = 'SKIPPED_CAPACITY';
+      } else if (portfolio.availableCashUsdc < PORTFOLIO_STAKE_USDC) {
+        position.portfolioStakeUsdc = 0;
+        position.portfolioStatus = 'SKIPPED_CASH';
+      } else {
+        position.portfolioStakeUsdc = PORTFOLIO_STAKE_USDC;
+        position.portfolioStatus = 'RESERVED';
+      }
+    }
+  }
+  if (portfolioMigrated) history.push({ at: now, type: 'PORTFOLIO_LIMITS_APPLIED', reason: 'finite_bankroll_v1' });
+  let portfolioEpoch = normalizePortfolioEpoch(raw.portfolioEpoch);
+  if (!portfolioEpoch) {
+    portfolioEpoch = createPortfolioEpoch(now);
+    for (const position of positions) {
+      if (position.portfolioStatus === 'RESERVED' && !(Number(position.allocatedUsdc) > 0)) {
+        position.portfolioStatus = 'CANCELLED_EPOCH_RESET';
+        position.portfolioStakeUsdc = 0;
+        position.entry = { ...position.entry, missingKind: 'epoch_reset', missingAt: now };
+      }
+    }
+    history.push({ at: now, type: 'PORTFOLIO_EPOCH_STARTED', reason: 'user_reset_cost_v3',
+      portfolioEpochId: portfolioEpoch.id, costModelVersion: COST_MODEL_VERSION });
+  }
   return {
     version: FACTOR_LAB_VERSION,
     autoPromotionEnabled: raw.autoPromotionEnabled !== false,
@@ -428,8 +622,12 @@ function migrateState(raw, policy, now) {
       baselineVersion: champion.version, createdAt: finite(raw.challenger?.createdAt) ?? now,
       changedPaths: challengerMutation.changedPaths, direction: challengerMutation.direction
     } : null,
-    trades: Array.isArray(raw.trades) ? raw.trades.filter(row => row && typeof row === 'object').slice(-MAX_TRADES) : [],
-    aggregates: Array.isArray(raw.aggregates) ? raw.aggregates.slice(-1_000) : [],
+    positions,
+    referenceSamples,
+    reports: Array.isArray(raw.reports) ? raw.reports.slice(-1_000) : [],
+    trades: [...positions, ...referenceSamples],
+    aggregates,
+    portfolioEpoch,
     history,
     lastPromotionAt: finite(raw.lastPromotionAt) ?? 0,
     disabledReason: typeof raw.disabledReason === 'string' ? raw.disabledReason.slice(0, 80) : ''
@@ -438,6 +636,7 @@ function migrateState(raw, policy, now) {
 
 function cohortFor(candidate) {
   if (candidate.status === 'X_REVIEW') return 'signal';
+  if (candidate.status === 'WAIT_RECHECK' && candidate.experimentEligible === true) return 'signal';
   if (candidate.status === 'WAIT_RECHECK') return 'control';
   if (candidate.status === 'HARD_REJECT') return 'hard_reject';
   return '';
@@ -538,13 +737,35 @@ function publicSample(sample) {
   };
 }
 
+function publicPath(pathState) {
+  if (!pathState || typeof pathState !== 'object' || Array.isArray(pathState)) return null;
+  const nullable = value => value === null || value === undefined || value === '' ? null : finite(value);
+  const failure = ['RATE_LIMITED', 'TIMEOUT', 'NO_CANDLE', 'UNTRADEABLE', 'NO_LIQUIDITY', 'READ_FAILED']
+    .includes(String(pathState.lastFailureCode || '').toUpperCase())
+    ? String(pathState.lastFailureCode).toUpperCase() : '';
+  return {
+    schemaVersion: finite(pathState.schemaVersion), historicalUnavailable: pathState.historicalUnavailable === true,
+    firstAt: nullable(pathState.firstAt), lastAt: nullable(pathState.lastAt),
+    observedBars: finite(pathState.observedBars), expectedBars: finite(pathState.expectedBars),
+    missingBars: finite(pathState.missingBars), coverage: nullable(pathState.coverage),
+    continuous: pathState.continuous === true,
+    mfeRate: nullable(pathState.mfeRate), mfeAt: nullable(pathState.mfeAt),
+    maeRate: nullable(pathState.maeRate), maeAt: nullable(pathState.maeAt),
+    maxDrawdownRate: nullable(pathState.maxDrawdownRate), lastFailureCode: failure
+  };
+}
+
 function publicTrade(trade) {
   const factors = trade.factors || {};
+  const links = publicLinkSnapshot(trade);
   return {
     id: String(trade.id || '').slice(0, 64), chain: String(trade.chain || '').slice(0, 32),
     address: String(trade.address || '').slice(0, 128), symbol: String(trade.symbol || '?').slice(0, 30),
+    ...links,
     cohort: String(trade.cohort || '').slice(0, 24), exploration: trade.exploration === true,
+    evidenceTier: String(trade.evidenceTier || '').slice(0, 24), notionalUsdc: finite(trade.notionalUsdc),
     signalAt: finite(trade.signalAt), strategyVersion: String(trade.strategyVersion || '').slice(0, 64),
+    portfolioEpochId: String(trade.portfolioEpochId || '').slice(0, 64),
     initialDecision: String(trade.initialDecision || '').slice(0, 32), latestDecision: String(trade.latestDecision || '').slice(0, 32),
     chaseRisk: trade.chaseRisk === true, matchedTradeId: String(trade.matchedTradeId || '').slice(0, 64),
     factors: {
@@ -556,7 +777,91 @@ function publicTrade(trade) {
     entry: trade.entry?.price ? { targetAt: finite(trade.entry.targetAt), at: finite(trade.entry.at), price: finite(trade.entry.price),
       liquidity: finite(trade.entry.liquidity), source: String(trade.entry.source || '').slice(0, 40) }
       : { targetAt: finite(trade.entry?.targetAt), missingAt: finite(trade.entry?.missingAt), missingKind: String(trade.entry?.missingKind || '').slice(0, 40) },
-    samples: Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => [key, publicSample(trade.samples?.[key])]))
+    samples: Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => [key, publicSample(trade.samples?.[key])])),
+    path: publicPath(trade.path)
+  };
+}
+
+function publicPosition(position) {
+  return {
+    ...publicTrade(position),
+    status: String(position.status || '').slice(0, 24),
+    portfolioStatus: String(position.portfolioStatus || '').slice(0, 32),
+    portfolioStakeUsdc: finite(position.portfolioStakeUsdc),
+    allocatedUsdc: finite(position.allocatedUsdc), recoveredUsdc: finite(position.recoveredUsdc),
+    remainingUnits: finite(position.remainingUnits), highWaterNetUsdc: finite(position.highWaterNetUsdc),
+    realizedNetUsdc: finite(position.realizedNetUsdc), conservativeReturn: finite(position.conservativeReturn),
+    closedAt: finite(position.closedAt), exitReason: String(position.exitReason || '').slice(0, 48),
+    costModelVersion: finite(position.costModelVersion), exitPolicyVersion: finite(position.exitPolicyVersion),
+    cashflows: (Array.isArray(position.cashflows) ? position.cashflows : []).slice(-50).map(row => ({
+      at: finite(row.at), kind: String(row.kind || '').slice(0, 48), units: finite(row.units),
+      price: finite(row.price), liquidity: finite(row.liquidity), netUsdc: finite(row.netUsdc),
+      fixedCostRate: finite(row.fixedCostRate), dynamicImpactRate: finite(row.dynamicImpactRate)
+    }))
+  };
+}
+
+function portfolioSnapshot(trades = [], aggregates = [], epoch = null) {
+  const epochId = String(epoch?.id || '');
+  const positions = trades.filter(row => row?.cohort === 'signal' && row?.legacyFixedHorizonOnly !== true
+    && (!epochId || row.portfolioEpochId === epochId));
+  const archived = aggregates.reduce((total, row) => {
+    const capital = epochId
+      ? (Array.isArray(row?.portfolioEpochs) ? row.portfolioEpochs.find(item => item?.id === epochId)?.capital : null)
+      : row?.capital;
+    total.realized += Number(capital?.realizedNetUsdc || 0);
+    total.turnover += Number(capital?.allocatedUsdc || 0);
+    return total;
+  }, { realized: 0, turnover: 0 });
+  const cashflowNet = positions.reduce((sum, row) => sum + (Array.isArray(row.cashflows)
+    ? row.cashflows.reduce((flow, item) => flow + Number(item?.netUsdc || 0), 0) : 0), 0);
+  const reserved = positions.filter(row => row.portfolioStatus === 'RESERVED' && !(Number(row.allocatedUsdc) > 0));
+  const open = positions.filter(row => ['OPEN', 'RUNNER'].includes(row.status) && Number(row.allocatedUsdc) > 0);
+  const cashBalanceUsdc = PORTFOLIO_INITIAL_USDC + archived.realized + cashflowNet;
+  const reservedUsdc = reserved.reduce((sum, row) => sum + Number(row.portfolioStakeUsdc || 0), 0);
+  const deployedUsdc = open.reduce((sum, row) => sum
+    + Math.max(0, Number(row.allocatedUsdc || 0) - Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0))), 0);
+  const turnoverUsdc = archived.turnover + positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0);
+  return {
+    initialUsdc: PORTFOLIO_INITIAL_USDC,
+    epochId,
+    epochStartedAt: finite(epoch?.startedAt),
+    costModelVersion: finite(epoch?.costModelVersion) ?? COST_MODEL_VERSION,
+    fixedCostRate: finite(epoch?.fixedCostRate ?? epoch?.allInCostRate) ?? FIXED_ROUND_TRIP_COST,
+    stakeUsdc: PORTFOLIO_STAKE_USDC,
+    maxOpen: PORTFOLIO_MAX_OPEN,
+    cashBalanceUsdc,
+    availableCashUsdc: Math.max(0, cashBalanceUsdc - reservedUsdc),
+    deployedUsdc,
+    reservedUsdc,
+    bookEquityUsdc: cashBalanceUsdc + deployedUsdc,
+    turnoverUsdc,
+    openPositions: open.length,
+    reservedPositions: reserved.length,
+    availableSlots: Math.max(0, PORTFOLIO_MAX_OPEN - open.length - reserved.length),
+    skippedCount: positions.filter(row => String(row.portfolioStatus || '').startsWith('SKIPPED_')).length
+  };
+}
+
+function publicReport(report) {
+  const metric = row => ({
+    eligible: finite(row?.eligible), completed: finite(row?.completed), missing: finite(row?.missing),
+    coverage: finite(row?.coverage), observedMedian: finite(row?.observedMedian),
+    conservativeMedian: finite(row?.conservativeMedian), hitRate: finite(row?.hitRate), p10: finite(row?.p10)
+  });
+  return {
+    id: String(report?.id || '').slice(0, 64), type: ['STAGE', 'DAILY'].includes(report?.type) ? report.type : '',
+    at: finite(report?.at), completed15m: finite(report?.completed15m),
+    strategyVersion: String(report?.strategyVersion || '').slice(0, 64),
+    capital: {
+      positionCount: finite(report?.capital?.positionCount), allocatedUsdc: finite(report?.capital?.allocatedUsdc),
+      openPositions: finite(report?.capital?.openPositions), unrecoveredPrincipalUsdc: finite(report?.capital?.unrecoveredPrincipalUsdc),
+      recoveredPrincipalUsdc: finite(report?.capital?.recoveredPrincipalUsdc),
+      principalRecovered: finite(report?.capital?.principalRecovered), realizedNetUsdc: finite(report?.capital?.realizedNetUsdc)
+    },
+    exits: Object.fromEntries(['stopRate', 'principalRecoveryRate', 'trailingRate', 'timeoutRate', 'safetyRate']
+      .map(key => [key, finite(report?.exits?.[key])])),
+    horizons: Object.fromEntries(MAIN_HORIZONS.map(key => [key, metric(report?.horizons?.[key])]))
   };
 }
 
@@ -564,6 +869,19 @@ function publicAggregate(aggregate) {
   const allowedFactors = new Set(['marketCap', 'liquidity', 'ageSec', 'discoveryScore', 'holders', 'volume1h', 'smartWallets', 'priorityBand', 'kolOnly']);
   return {
     at: finite(aggregate?.at), type: aggregate?.type === 'PRUNED' ? 'PRUNED' : 'ARCHIVE', count: finite(aggregate?.count),
+    capital: {
+      positionCount: finite(aggregate?.capital?.positionCount), allocatedUsdc: finite(aggregate?.capital?.allocatedUsdc),
+      recoveredPrincipalUsdc: finite(aggregate?.capital?.recoveredPrincipalUsdc), principalRecovered: finite(aggregate?.capital?.principalRecovered),
+      realizedNetUsdc: finite(aggregate?.capital?.realizedNetUsdc),
+      exitCounts: Object.fromEntries(Object.entries(aggregate?.capital?.exitCounts || {}).slice(0, 20)
+        .map(([key, value]) => [String(key).slice(0, 48), finite(value)]))
+    },
+    paths: {
+      tradeCount: finite(aggregate?.paths?.tradeCount),
+      historicalUnavailable: finite(aggregate?.paths?.historicalUnavailable),
+      observedBars: finite(aggregate?.paths?.observedBars), expectedBars: finite(aggregate?.paths?.expectedBars),
+      missingBars: finite(aggregate?.paths?.missingBars)
+    },
     groups: (Array.isArray(aggregate?.groups) ? aggregate.groups : []).slice(0, 500).map(group => ({
       strategyVersion: String(group?.strategyVersion || '').slice(0, 64), chain: String(group?.chain || '').slice(0, 32),
       cohort: String(group?.cohort || '').slice(0, 24), horizon: Object.hasOwn(SHADOW_HORIZONS, group?.horizon) ? group.horizon : '',
@@ -653,8 +971,45 @@ function archiveTrades(trades, now) {
       }
     }
   }
+  const positions = trades.filter(trade => trade?.cohort === 'signal' && trade?.legacyFixedHorizonOnly !== true
+    && Number(trade.allocatedUsdc) > 0 && trade.status === 'CLOSED');
+  const exitCounts = {};
+  for (const position of positions) {
+    const reason = String(position.exitReason || 'UNKNOWN');
+    exitCounts[reason] = (exitCounts[reason] || 0) + 1;
+  }
+  const portfolioEpochs = [...new Set(positions.map(row => String(row.portfolioEpochId || '')).filter(Boolean))]
+    .map(id => {
+      const rows = positions.filter(row => row.portfolioEpochId === id);
+      const counts = {};
+      for (const row of rows) counts[row.exitReason || 'UNKNOWN'] = (counts[row.exitReason || 'UNKNOWN'] || 0) + 1;
+      return { id, capital: {
+        positionCount: rows.length,
+        allocatedUsdc: rows.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0),
+        recoveredPrincipalUsdc: rows.reduce((sum, row) => sum + Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0)), 0),
+        principalRecovered: rows.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length,
+        realizedNetUsdc: rows.reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0),
+        exitCounts: counts
+      } };
+    });
   return {
     at: now, type: 'PRUNED', count: trades.length,
+    paths: {
+      tradeCount: trades.filter(row => row.path && typeof row.path === 'object').length,
+      historicalUnavailable: trades.filter(row => row.path?.historicalUnavailable === true).length,
+      observedBars: trades.reduce((sum, row) => sum + Number(row.path?.observedBars || 0), 0),
+      expectedBars: trades.reduce((sum, row) => sum + Number(row.path?.expectedBars || 0), 0),
+      missingBars: trades.reduce((sum, row) => sum + Number(row.path?.missingBars || 0), 0)
+    },
+    capital: {
+      positionCount: positions.length,
+      allocatedUsdc: positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0),
+      recoveredPrincipalUsdc: positions.reduce((sum, row) => sum + Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0)), 0),
+      principalRecovered: positions.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length,
+      realizedNetUsdc: positions.reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0),
+      exitCounts
+    },
+    portfolioEpochs,
     groups: [...groups.values()].map(group => ({
       strategyVersion: group.strategyVersion, chain: group.chain, cohort: group.cohort, horizon: group.horizon,
       count: group.count, observedCount: group.observed.length, conservativeCount: group.conservative.length,
@@ -668,10 +1023,66 @@ function archiveTrades(trades, now) {
   };
 }
 
+function pathTargetEnd(trade, trades) {
+  const entryAt = finite(trade?.entry?.at);
+  if (entryAt === null || !(finite(trade?.entry?.price) > 0) || trade?.legacyFixedHorizonOnly === true) return null;
+  if (trade.cohort === 'signal') {
+    const fundedClose = Number(trade.allocatedUsdc) > 0 && trade.status === 'CLOSED' ? finite(trade.closedAt) : null;
+    return Math.min(entryAt + MAX_HOLD_MS, fundedClose ?? entryAt + MAX_HOLD_MS);
+  }
+  if (trade.cohort !== 'control' || !trade.matchedTradeId || trade.contaminatedAt) return null;
+  const paired = trades.find(row => row.id === trade.matchedTradeId && row.cohort === 'signal');
+  const pairedEntryAt = finite(paired?.entry?.at);
+  if (pairedEntryAt === null) return null;
+  const pairedEnd = pathTargetEnd(paired, trades);
+  if (pairedEnd === null) return null;
+  return entryAt + Math.min(MAX_HOLD_MS, Math.max(0, pairedEnd - pairedEntryAt));
+}
+
+function pathFailureCode(error) {
+  const code = String(error?.code || 'READ_FAILED').toUpperCase();
+  if (code === 'GMGN_RATE_LIMITED' || code === 'RATE_LIMITED') return 'RATE_LIMITED';
+  if (code === 'GMGN_TIMEOUT' || code === 'TIMEOUT') return 'TIMEOUT';
+  if (error?.confirmed === true && /NO_LIQUIDITY/.test(code)) return 'NO_LIQUIDITY';
+  if (error?.confirmed === true && /UNTRADEABLE|POOL_REMOVED/.test(code)) return 'UNTRADEABLE';
+  if (code === 'NO_CANDLE') return 'NO_CANDLE';
+  return 'READ_FAILED';
+}
+
+function nextMissingPathAt(pathState, entryAt, throughAt) {
+  const present = new Set((pathState?.bars || []).map(row => row.openAt));
+  for (let at = entryAt; at + 60_000 <= throughAt; at += 60_000) if (!present.has(at)) return at;
+  return null;
+}
+
+function boundedPathMetadata(pathState, summary, retry = null) {
+  const nullableFinite = value => value === null || value === undefined ? null : finite(value);
+  return {
+    schemaVersion: Number(pathState?.version || 1),
+    firstAt: nullableFinite(pathState?.firstAt),
+    lastAt: nullableFinite(pathState?.lastAt),
+    observedBars: Number(summary?.observedBars || 0),
+    expectedBars: Number(summary?.expectedBars || 0),
+    missingBars: Number(summary?.missingBars || 0),
+    coverage: finite(summary?.coverage) ?? 0,
+    continuous: summary?.continuous === true,
+    mfeRate: nullableFinite(summary?.mfeRate),
+    mfeAt: nullableFinite(summary?.mfeAt),
+    maeRate: nullableFinite(summary?.maeRate),
+    maeAt: nullableFinite(summary?.maeAt),
+    maxDrawdownRate: nullableFinite(summary?.maxDrawdownRate),
+    lastFailureCode: String(retry?.code || '').slice(0, 32),
+    nextAt: nullableFinite(retry?.nextAt)
+  };
+}
+
 export class FactorLab {
-  constructor(dir, { policy, now = Date.now } = {}) {
+  constructor(dir, { policy, now = Date.now, pathStore = null } = {}) {
     this.file = path.join(dir, 'factor-lab.json');
     this.now = now;
+    this.pathStore = pathStore || new FactorPathStore(dir);
+    this.pendingPathPruneIds = new Set();
+    this.pendingPathPruneCutoffAt = 0;
     fs.mkdirSync(dir, { recursive: true });
     const fallback = defaultState(policy, now());
     const loaded = readJsonWithBackup(this.file, fallback);
@@ -680,8 +1091,24 @@ export class FactorLab {
   }
 
   save() {
-    atomicJson(this.file, this.state);
+    this.syncCollections();
+    const { trades: _compatibilityTrades, ...persisted } = this.state;
+    atomicJson(this.file, persisted);
+    if (this.pendingPathPruneIds.size && typeof this.pathStore?.prune === 'function') {
+      const removeIds = new Set(this.pendingPathPruneIds);
+      const keepIds = new Set(this.state.trades.map(row => String(row?.id || '')).filter(Boolean));
+      this.pathStore.prune({ keepIds, removeIds, cutoffAt: this.pendingPathPruneCutoffAt });
+      for (const id of removeIds) this.pendingPathPruneIds.delete(id);
+      if (!this.pendingPathPruneIds.size) this.pendingPathPruneCutoffAt = 0;
+    }
     return this.state;
+  }
+
+  syncCollections() {
+    const rows = Array.isArray(this.state.trades) ? this.state.trades : [];
+    this.state.positions = rows.filter(row => row?.cohort === 'signal' && row?.legacyFixedHorizonOnly !== true);
+    this.state.referenceSamples = rows.filter(row => row?.cohort !== 'signal' || row?.legacyFixedHorizonOnly === true);
+    this.state.reports = Array.isArray(this.state.reports) ? this.state.reports.slice(-1_000) : [];
   }
 
   effectiveStrategy() {
@@ -747,44 +1174,30 @@ export class FactorLab {
   }
 
   automationTick(now = this.now()) {
-    if (!this.state.autoPromotionEnabled || this.state.disabledReason) return { action: 'paused' };
-    try {
-      if (this.state.previousChampion && this.state.champion.activatedAt) {
-        const rollback = comparisonMetrics(this.state.trades, this.state.previousChampion.strategy,
-          this.state.champion.strategy, this.state.champion.activatedAt, `rollback:${this.state.champion.version}`, now);
-        const coverage = Math.min(...MAIN_HORIZONS.map(key => rollback.coverage[key]));
-        const result = this.evaluateRollback({ completed: rollback.completed15m,
-          weightedMedianUplift: rollback.weightedMedianUplift, coverage }, now);
-        if (result.rolledBack) return { action: 'rolled_back' };
-      }
-      if (this.state.challenger) {
-        const metrics = comparisonMetrics(this.state.trades, this.state.champion.strategy,
-          this.state.challenger.strategy, this.state.challenger.createdAt, this.state.challenger.version, now);
-        const result = this.evaluateChallenger(metrics, now);
-        return { action: result.promoted ? 'promoted' : 'observing', metrics, reasons: result.reasons || [] };
-      }
-      const baseline = strategyPerformance(this.state.trades, this.state.champion.strategy, 0, now);
-      const spanMs = baseline.rows.length ? Math.max(...baseline.rows.map(row => row.signalAt)) - Math.min(...baseline.rows.map(row => row.signalAt)) : 0;
-      if (baseline.completed15m < 80 || spanMs < DAY) return { action: 'collecting' };
-      const ranked = candidateMutations(this.state.champion.strategy).map(mutation => {
-        const performance = strategyPerformance(this.state.trades, mutation.strategy, 0, now);
-        const horizonUplifts = MAIN_HORIZONS.map(key => Number(performance.horizons[key].median ?? -Infinity)
-          - Number(baseline.horizons[key].median ?? 0));
-        return { ...mutation, uplift: performance.weightedMedian - baseline.weightedMedian, horizonUplifts };
-      }).filter(row => row.uplift > 0.005 && row.horizonUplifts.every(value => value > 0))
-        .sort((a, b) => b.uplift - a.uplift);
-      if (!ranked.length) return { action: 'no_candidate' };
-      this.startChallenger(ranked[0].strategy, now, ranked[0].changedPaths);
-      return { action: 'challenger_created', changedPaths: ranked[0].changedPaths };
-    } catch (error) {
-      this.state.disabledReason = 'AUTOMATION_ERROR';
-      this.state.history.push({ at: now, type: 'AUTOMATION_DISABLED', reason: 'AUTOMATION_ERROR' });
-      this.save();
-      return { action: 'disabled', error: String(error?.code || 'AUTOMATION_ERROR') };
-    }
+    const quality = buildDataQualitySummary(this.state.trades, { now });
+    return { action: 'collect_only', reason: quality.primaryBlocker, quality };
   }
 
   recordCandidate(candidate, { now = this.now(), exploration = false } = {}) {
+    if (candidate?.status === 'HARD_REJECT') {
+      const key = tokenKey(candidate.chain, candidate.address);
+      for (const position of this.state.trades.filter(row => row.cohort === 'signal'
+        && tokenKey(row.chain, row.address) === key)) {
+        if (['OPEN', 'RUNNER'].includes(position.status)) {
+          const tradable = finite(candidate.price) > 0 && finite(candidate.liquidity) > 0
+            && candidate.deep?.security?.honeypot !== true;
+          applySafetyExit(position, {
+            at: now, price: candidate.price, liquidity: candidate.liquidity,
+            tradable, code: 'SAFETY_HARD_REJECT'
+          });
+        } else if (position.portfolioStatus === 'RESERVED' && !position.entry?.price) {
+          position.portfolioStatus = 'CANCELLED_SAFETY';
+          position.portfolioStakeUsdc = 0;
+          position.entry = { ...position.entry, missingKind: 'safety_cancelled', missingAt: now };
+          position.latestDecision = 'HARD_REJECT';
+        }
+      }
+    }
     const cohort = cohortFor(candidate);
     if (!cohort || (cohort === 'hard_reject' && !shouldSampleHardReject(candidate))) return null;
     const key = tokenKey(candidate.chain, candidate.address);
@@ -800,8 +1213,11 @@ export class FactorLab {
     const duplicate = this.state.trades.find(trade => tokenKey(trade.chain, trade.address) === key
       && trade.cohort === cohort && trade.strategyVersion === currentVersion);
     if (duplicate) {
+      const links = publicLinkSnapshot(candidate);
+      for (const field of ['twitter', 'website', 'gmgnUrl']) if (!duplicate[field] && links[field]) duplicate[field] = links[field];
       duplicate.latestDecision = candidate.status;
       duplicate.lastAuditedAt = now;
+      reconcileControlMatches(this.state.trades);
       this.save();
       return duplicate;
     }
@@ -809,21 +1225,44 @@ export class FactorLab {
       cohort, signalAt: now, policy: { discovery: this.state.champion.strategy.discovery },
       strategy: this.state.champion.strategy, exploration
     });
+    if (cohort === 'signal') {
+      trade.portfolioEpochId = this.state.portfolioEpoch.id;
+      const portfolio = portfolioSnapshot(this.state.trades, this.state.aggregates, this.state.portfolioEpoch);
+      if (portfolio.availableSlots < 1) {
+        trade.portfolioStakeUsdc = 0;
+        trade.portfolioStatus = 'SKIPPED_CAPACITY';
+      } else if (portfolio.availableCashUsdc < PORTFOLIO_STAKE_USDC) {
+        trade.portfolioStakeUsdc = 0;
+        trade.portfolioStatus = 'SKIPPED_CASH';
+      } else {
+        trade.portfolioStakeUsdc = PORTFOLIO_STAKE_USDC;
+        trade.portfolioStatus = 'RESERVED';
+      }
+    }
     this.state.trades.push(trade);
-    if (cohort === 'signal') matchControl(trade, this.state.trades.filter(row => row.cohort === 'control'));
+    reconcileControlMatches(this.state.trades);
     this.prune(now);
     this.save();
     return trade;
   }
 
   prune(now = this.now()) {
-    const expired = this.state.trades.filter(trade => now - Number(trade.signalAt || 0) > RETENTION_MS);
-    const fresh = this.state.trades.filter(trade => now - Number(trade.signalAt || 0) <= RETENTION_MS)
+    const protectedOpen = this.state.trades.filter(trade => ['OPEN', 'RUNNER'].includes(trade?.status));
+    const removable = this.state.trades.filter(trade => !['OPEN', 'RUNNER'].includes(trade?.status));
+    const expired = removable.filter(trade => now - Number(trade.signalAt || 0) > RETENTION_MS);
+    const fresh = removable.filter(trade => now - Number(trade.signalAt || 0) <= RETENTION_MS)
       .sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0));
-    const overflow = fresh.length > MAX_TRADES ? fresh.slice(0, fresh.length - MAX_TRADES) : [];
+    const available = Math.max(0, MAX_TRADES - protectedOpen.length);
+    const overflow = fresh.length > available ? fresh.slice(0, fresh.length - available) : [];
     const removed = [...expired, ...overflow];
-    if (removed.length) this.state.aggregates.push(archiveTrades(removed, now));
-    this.state.trades = fresh.slice(-MAX_TRADES);
+    if (removed.length) {
+      this.state.aggregates.push(archiveTrades(removed, now));
+      for (const trade of removed) if (trade?.id) this.pendingPathPruneIds.add(String(trade.id));
+      this.pendingPathPruneCutoffAt = Math.max(this.pendingPathPruneCutoffAt, now - RETENTION_MS);
+    }
+    const kept = available > 0 ? fresh.slice(-available) : [];
+    this.state.trades = [...protectedOpen, ...kept]
+      .sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0));
     this.state.aggregates = this.state.aggregates.slice(-1_000);
     this.state.history = this.state.history.slice(-1_000);
   }
@@ -832,8 +1271,206 @@ export class FactorLab {
     return dueShadowJobs(this.state.trades, now);
   }
 
+  rebalanceEntryReservations(now = this.now()) {
+    const rows = this.state.trades.filter(row => row?.cohort === 'signal'
+      && row?.legacyFixedHorizonOnly !== true && !row.entry?.price);
+    for (const row of rows.filter(item => item.portfolioStatus === 'RESERVED')) {
+      const attempts = Number(row.retries?.entry?.attempts || 0);
+      const expired = now - Number(row.entry?.targetAt || now) > ENTRY_RESERVATION_TTL_MS;
+      if (!expired && attempts < ENTRY_MAX_ATTEMPTS) continue;
+      row.entry = { ...row.entry, missingKind: 'entry_unavailable', missingAt: now };
+      row.portfolioStatus = 'ENTRY_UNAVAILABLE';
+      row.portfolioStakeUsdc = 0;
+      delete row.retries?.entry;
+    }
+    const candidates = rows.filter(row => ['SKIPPED_CAPACITY', 'SKIPPED_CASH'].includes(row.portfolioStatus)
+      && !row.entry?.missingKind)
+      .sort((a, b) => Number(a.entry?.targetAt || 0) - Number(b.entry?.targetAt || 0)
+        || Number(b.factors?.discoveryScore || 0) - Number(a.factors?.discoveryScore || 0));
+    for (const row of candidates) {
+      if (now - Number(row.entry?.targetAt || now) > ENTRY_RESERVATION_TTL_MS) {
+        row.entry = { ...row.entry, missingKind: 'entry_unavailable', missingAt: now };
+        row.portfolioStatus = 'ENTRY_UNAVAILABLE';
+        row.portfolioStakeUsdc = 0;
+        continue;
+      }
+      const portfolio = portfolioSnapshot(this.state.trades, this.state.aggregates, this.state.portfolioEpoch);
+      if (portfolio.availableSlots < 1 || portfolio.availableCashUsdc < PORTFOLIO_STAKE_USDC) break;
+      row.portfolioStatus = 'RESERVED';
+      row.portfolioStakeUsdc = PORTFOLIO_STAKE_USDC;
+    }
+  }
+
   async collect(gmgn, { limit = 4, now = this.now, deadline = Infinity } = {}) {
-    for (const job of this.dueJobs(now()).slice(0, limit)) {
+    let reads = 0;
+    const initialNow = now();
+    this.rebalanceEntryReservations(initialNow);
+    const standardDue = this.dueJobs(initialNow).filter(job => job.kind === 'entry'
+      || pathTargetEnd(job.trade, this.state.trades) === null);
+    const reservedStandardReads = standardDue.length && limit > 1 ? 1 : 0;
+    const pathReadLimit = Math.max(0, limit - reservedStandardReads);
+    const fundedOpen = this.state.trades.filter(row => row?.cohort === 'signal'
+      && row?.legacyFixedHorizonOnly !== true && ['OPEN', 'RUNNER'].includes(row.status) && row.entry?.at)
+      .filter(row => row.pendingExit
+        ? initialNow >= Number(row.exitRetry?.nextAt || 0)
+        : initialNow >= Number(row.pathRetry?.nextAt || 0))
+      .sort((a, b) => Number(Boolean(b.pendingExit)) - Number(Boolean(a.pendingExit))
+        || Number(a.lastPathAttemptAt || 0) - Number(b.lastPathAttemptAt || 0)
+        || Number(a.lastCandleAt || a.entry.at) - Number(b.lastCandleAt || b.entry.at));
+    const fundedIds = new Set(fundedOpen.map(row => row.id));
+    const researchSignals = this.state.trades.filter(row => row?.cohort === 'signal' && !fundedIds.has(row.id)
+      && pathTargetEnd(row, this.state.trades) !== null
+      && initialNow >= Number(row.pathRetry?.nextAt || 0))
+      .sort((a, b) => Number(a.lastPathAttemptAt || 0) - Number(b.lastPathAttemptAt || 0)
+        || Number(a.signalAt || 0) - Number(b.signalAt || 0) || String(a.id).localeCompare(String(b.id)));
+    const matchedControls = this.state.trades.filter(row => row?.cohort === 'control'
+      && pathTargetEnd(row, this.state.trades) !== null
+      && initialNow >= Number(row.pathRetry?.nextAt || 0))
+      .sort((a, b) => Number(a.lastPathAttemptAt || 0) - Number(b.lastPathAttemptAt || 0)
+        || Number(a.signalAt || 0) - Number(b.signalAt || 0) || String(a.id).localeCompare(String(b.id)));
+    const pathRows = [...fundedOpen, ...researchSignals, ...matchedControls];
+
+    const settlePending = async (position, requestedAt) => {
+      if (!position.pendingExit || reads >= pathReadLimit || typeof gmgn.liquiditySnapshot !== 'function') return false;
+      let snapshot = null;
+      try {
+        snapshot = await gmgn.liquiditySnapshot(position.address, position.chain);
+        reads++;
+      } catch (error) {
+        reads++;
+        position.exitRetry = { code: String(error?.code || 'READ_FAILED'), nextAt: requestedAt + 120_000 };
+        return false;
+      }
+      if (!(finite(snapshot?.liquidity) > 0)) {
+        position.exitRetry = { code: 'LIQUIDITY_UNAVAILABLE', nextAt: requestedAt + 120_000 };
+        return false;
+      }
+      const pending = position.pendingExit;
+      const applied = pending.event === 'EXPERIMENT_TIMEOUT'
+        ? applyTimeoutExit(position, { at: pending.candle.closeAt, price: pending.candle.close, liquidity: snapshot.liquidity })
+        : applyExitCandle(position, pending.candle, { exitLiquidity: snapshot.liquidity }).applied;
+      if (!applied) return false;
+      position.lastCandleAt = pending.candle.closeAt;
+      delete position.pendingExit;
+      delete position.exitRetry;
+      return true;
+    };
+
+    const refreshPathMetadata = (trade, throughAt) => {
+      const pathState = this.pathStore.read(trade.id);
+      const summary = summarizePath(pathState, {
+        entryAt: trade.entry.at, entryPrice: trade.entry.price, throughAt
+      });
+      trade.path = boundedPathMetadata(pathState, summary, trade.pathRetry);
+      return pathState;
+    };
+
+    const recordPathFailure = (trade, code, requestedAt) => {
+      const attempts = Number(trade.pathRetry?.attempts || 0) + 1;
+      const delay = code === 'NO_CANDLE' ? 60_000
+        : Math.min(60 * 60_000, 120_000 * 2 ** Math.min(attempts - 1, 5));
+      trade.pathRetry = { attempts, code, nextAt: requestedAt + delay };
+      const targetEndAt = pathTargetEnd(trade, this.state.trades);
+      refreshPathMetadata(trade, Math.min(requestedAt, targetEndAt ?? requestedAt));
+    };
+
+    if (typeof gmgn.candlesBetween === 'function') {
+      for (const position of pathRows) {
+        if (reads >= pathReadLimit || now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
+        const requestedAt = now();
+        if (position.pendingExit) {
+          await settlePending(position, requestedAt);
+          continue;
+        }
+        const targetEndAt = pathTargetEnd(position, this.state.trades);
+        const throughAt = Math.min(requestedAt, targetEndAt ?? requestedAt);
+        const existingPath = this.pathStore.read(position.id);
+        const fromAt = nextMissingPathAt(existingPath, Number(position.entry.at), throughAt);
+        if (fromAt === null) {
+          refreshPathMetadata(position, throughAt);
+          continue;
+        }
+        let candles = [];
+        try {
+          candles = await gmgn.candlesBetween(position.address,
+            fromAt, throughAt, position.chain, requestedAt);
+          reads++;
+          position.lastPathAttemptAt = requestedAt;
+        } catch (error) {
+          reads++;
+          position.lastPathAttemptAt = requestedAt;
+          const code = pathFailureCode(error);
+          recordPathFailure(position, code, requestedAt);
+          if (error?.confirmed === true && ['UNTRADEABLE', 'NO_LIQUIDITY'].includes(code)) {
+            for (const job of dueShadowJobs([position], requestedAt).filter(job => job.kind === 'exit')) {
+              applyPriceSample(position, job, null, { code, confirmed: true });
+            }
+          }
+          if (code === 'RATE_LIMITED') break;
+          continue;
+        }
+        const normalized = normalizePathCandles(candles, { now: throughAt });
+        if (!normalized.length) {
+          recordPathFailure(position, 'NO_CANDLE', requestedAt);
+          continue;
+        }
+
+        const accountPosition = fundedIds.has(position.id);
+        const accepted = [];
+        for (const candle of normalized) {
+          accepted.push(candle);
+          if (!accountPosition || candle.closeAt <= Number(position.lastCandleAt || position.entry.at)) continue;
+          const previousCursor = position.lastCandleAt;
+          const detected = applyExitCandle(position, candle, { exitLiquidity: null });
+          if (detected.pending === 'EXIT_LIQUIDITY') {
+            position.pendingExit = { event: detected.event, candle: clone(candle) };
+            if (previousCursor === undefined) delete position.lastCandleAt;
+            else position.lastCandleAt = previousCursor;
+            await settlePending(position, requestedAt);
+            if (position.pendingExit || position.status === 'CLOSED') break;
+          }
+          if (!['OPEN', 'RUNNER'].includes(position.status)) break;
+          const timeoutAt = Number(position.entry.at) + MAX_HOLD_MS;
+          if (candle.closeAt >= timeoutAt && candle.closeAt <= timeoutAt + 60_000) {
+            position.pendingExit = { event: 'EXPERIMENT_TIMEOUT', candle: clone(candle) };
+            if (previousCursor === undefined) delete position.lastCandleAt;
+            else position.lastCandleAt = previousCursor;
+            await settlePending(position, requestedAt);
+            if (position.pendingExit || position.status === 'CLOSED') break;
+          } else if (candle.closeAt > timeoutAt + 60_000) {
+            position.timeoutMissingAt = requestedAt;
+            position.pathRetry = { code: 'TIMEOUT_CANDLE_MISSING', nextAt: requestedAt + 120_000 };
+            break;
+          }
+          position.lastCandleAt = candle.closeAt;
+        }
+
+        delete position.pathRetry;
+        const finalTargetEnd = pathTargetEnd(position, this.state.trades) ?? targetEndAt;
+        const finalThroughAt = Math.min(requestedAt, finalTargetEnd ?? requestedAt);
+        const stored = this.pathStore.append(position.id, accepted, {
+          now: requestedAt,
+          entryAt: position.entry.at,
+          entryPrice: position.entry.price,
+          throughAt: finalThroughAt
+        });
+        position.path = boundedPathMetadata(stored.path, stored.summary, null);
+        const barsByClose = new Map(stored.path.bars.map(candle => [candle.closeAt, candle]));
+        for (const job of dueShadowJobs([position], requestedAt).filter(job => job.kind === 'exit')) {
+          const candle = barsByClose.get(job.targetAt);
+          if (candle) applyPriceSample(position, job, {
+            at: candle.closeAt, price: candle.close, source: candle.source
+          });
+        }
+      }
+    }
+    const remaining = Math.max(0, limit - reads);
+    const jobs = this.dueJobs(now()).filter(job => job.kind === 'entry'
+      || pathTargetEnd(job.trade, this.state.trades) === null)
+      .sort((a, b) => Number(b.kind === 'entry' && b.trade.portfolioStatus === 'RESERVED')
+        - Number(a.kind === 'entry' && a.trade.portfolioStatus === 'RESERVED')
+        || Number(a.targetAt || 0) - Number(b.targetAt || 0)).slice(0, remaining);
+    for (const job of jobs) {
       if (now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
       let sample = null;
       let failure = { code: 'NO_CANDLE', confirmed: false };
@@ -845,17 +1482,26 @@ export class FactorLab {
         const key = job.kind === 'entry' ? 'entry' : job.key;
         const attempts = Number(job.trade.retries?.[key]?.attempts || 0) + 1;
         job.trade.retries ||= {};
-        if (job.kind === 'entry' && (attempts >= 5 || now() - job.targetAt >= 30 * 60_000)) {
+        if (job.kind === 'entry' && (attempts >= ENTRY_MAX_ATTEMPTS
+          || now() - job.targetAt > ENTRY_RESERVATION_TTL_MS)) {
           job.trade.entry = { ...job.trade.entry, missingKind: 'entry_unavailable', missingAt: now() };
+          if (job.trade.portfolioStatus === 'RESERVED') {
+            job.trade.portfolioStatus = 'ENTRY_UNAVAILABLE';
+            job.trade.portfolioStakeUsdc = 0;
+          }
           delete job.trade.retries.entry;
+          this.rebalanceEntryReservations(now());
         } else job.trade.retries[key] = {
           attempts, code: failure.code,
-          nextAt: now() + Math.min(60 * 60_000, 120_000 * 2 ** Math.min(attempts - 1, 5))
+          nextAt: now() + (job.kind === 'entry' ? 60_000
+            : Math.min(60 * 60_000, 120_000 * 2 ** Math.min(attempts - 1, 5)))
         };
       }
       if (failure.code === 'GMGN_RATE_LIMITED') break;
     }
+    this.rebalanceEntryReservations(now());
     this.prune(now());
+    this.reportTick(now(), { save: false });
     this.save();
     return this.state;
   }
@@ -891,6 +1537,42 @@ export class FactorLab {
     this.save();
   }
 
+  reportTick(now = this.now(), { save = true } = {}) {
+    this.syncCollections();
+    const completed15m = this.state.trades.filter(row => row.cohort === 'signal'
+      && Number.isFinite(row.samples?.m15?.conservativeReturn)).length;
+    const reports = this.state.reports || (this.state.reports = []);
+    const lastStage = [...reports].reverse().find(row => row.type === 'STAGE');
+    const lastDaily = [...reports].reverse().find(row => row.type === 'DAILY');
+    const created = [];
+    const snapshot = type => {
+      const summary = this.summary(now);
+      return Object.freeze({
+        id: hash(type + ':' + now + ':' + completed15m).slice(0, 32),
+        type, at: now, completed15m,
+        strategyVersion: this.state.champion?.version || '',
+        capital: clone(summary.capital), exits: clone(summary.exits),
+        horizons: clone(Object.fromEntries(MAIN_HORIZONS.map(key => [key, summary.horizons[key]])))
+      });
+    };
+    const stageBaseAt = finite(lastStage?.at) ?? finite(this.state.champion?.activatedAt) ?? now;
+    const stageBaseCount = finite(lastStage?.completed15m) ?? 0;
+    if (completed15m >= stageBaseCount + 20 && now - stageBaseAt >= 6 * 60 * 60_000) {
+      const report = snapshot('STAGE');
+      reports.push(report);
+      created.push(report);
+    }
+    const dailyBaseAt = finite(lastDaily?.at) ?? finite(this.state.champion?.activatedAt) ?? now;
+    if (now - dailyBaseAt >= DAY) {
+      const report = snapshot('DAILY');
+      reports.push(report);
+      created.push(report);
+    }
+    this.state.reports = reports.slice(-1_000);
+    if (created.length && save) this.save();
+    return created.map(clone);
+  }
+
   summary(now = this.now()) {
     const signals = this.state.trades.filter(row => row.cohort === 'signal');
     const horizons = Object.fromEntries(Object.keys(SHADOW_HORIZONS).map(key => {
@@ -911,6 +1593,38 @@ export class FactorLab {
         p10: percentile(conservative, 0.10)
       }];
     }));
+    const epochId = String(this.state.portfolioEpoch?.id || '');
+    const positions = this.state.trades.filter(row => row.cohort === 'signal'
+      && row.legacyFixedHorizonOnly !== true && row.portfolioEpochId === epochId && Number(row.allocatedUsdc) > 0);
+    const archivedCapital = (this.state.aggregates || []).reduce((total, row) => {
+      const capital = (Array.isArray(row?.portfolioEpochs)
+        ? row.portfolioEpochs.find(item => item?.id === epochId)?.capital : null) || {};
+      total.positionCount += Number(capital.positionCount || 0);
+      total.allocatedUsdc += Number(capital.allocatedUsdc || 0);
+      total.recoveredPrincipalUsdc += Number(capital.recoveredPrincipalUsdc || 0);
+      total.principalRecovered += Number(capital.principalRecovered || 0);
+      total.realizedNetUsdc += Number(capital.realizedNetUsdc || 0);
+      for (const [reason, count] of Object.entries(capital.exitCounts || {})) total.exitCounts[reason] = (total.exitCounts[reason] || 0) + Number(count || 0);
+      return total;
+    }, { positionCount: 0, allocatedUsdc: 0, recoveredPrincipalUsdc: 0, principalRecovered: 0, realizedNetUsdc: 0, exitCounts: {} });
+    const allocatedUsdc = archivedCapital.allocatedUsdc + positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0);
+    const openPositions = positions.filter(row => ['OPEN', 'RUNNER'].includes(row.status)).length;
+    const principalRecovered = archivedCapital.principalRecovered
+      + positions.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length;
+    const recoveredPrincipalUsdc = archivedCapital.recoveredPrincipalUsdc + positions.reduce((sum, row) =>
+      sum + Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0)), 0);
+    const unrecoveredPrincipalUsdc = positions.reduce((sum, row) =>
+      sum + Math.max(0, Number(row.allocatedUsdc || 0) - Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0))), 0);
+    const realizedNetUsdc = archivedCapital.realizedNetUsdc + positions.filter(row => row.status === 'CLOSED')
+      .reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0);
+    const positionCount = archivedCapital.positionCount + positions.length;
+    const rate = reason => positionCount
+      ? ((archivedCapital.exitCounts[reason] || 0) + positions.filter(row => row.exitReason === reason).length) / positionCount : 0;
+    const completed15m = signals.filter(row => Number.isFinite(row.samples?.m15?.conservativeReturn)).length;
+    const lastReport = (this.state.reports || []).at(-1) || null;
+    const lastStage = [...(this.state.reports || [])].reverse().find(row => row.type === 'STAGE');
+    const lastDaily = [...(this.state.reports || [])].reverse().find(row => row.type === 'DAILY');
+    const optimization = buildDataQualitySummary(this.state.trades, { now });
     return {
       enabled: true,
       autoPromotionEnabled: this.state.autoPromotionEnabled === true,
@@ -922,7 +1636,24 @@ export class FactorLab {
       controlCount: this.state.trades.filter(row => row.cohort === 'control').length,
       hardRejectCount: this.state.trades.filter(row => row.cohort === 'hard_reject').length,
       matchedPairs: signals.filter(row => row.matchedTradeId).length,
+      capital: { positionCount, allocatedUsdc, openPositions,
+        unrecoveredPrincipalUsdc, recoveredPrincipalUsdc, principalRecovered, realizedNetUsdc },
+      portfolio: portfolioSnapshot(this.state.trades, this.state.aggregates, this.state.portfolioEpoch),
+      exits: {
+        stopRate: rate('STOP_LOSS'), principalRecoveryRate: positionCount ? principalRecovered / positionCount : 0,
+        trailingRate: rate('TRAILING_DRAWDOWN'), timeoutRate: rate('EXPERIMENT_TIMEOUT'),
+        safetyRate: positionCount ? ([...Object.entries(archivedCapital.exitCounts), ...positions.map(row => [row.exitReason, 1])]
+          .reduce((sum, [reason, count]) => sum + (String(reason || '').startsWith('SAFETY_') ? Number(count || 0) : 0), 0) / positionCount) : 0
+      },
+      reportProgress: {
+        completed15m,
+        nextStageCompleted15m: (Math.floor(completed15m / 20) + 1) * 20,
+        lastReportAt: finite(lastReport?.at) ?? 0,
+        nextStageEarliestAt: (finite(lastStage?.at) ?? finite(this.state.champion?.activatedAt) ?? now) + 6 * 60 * 60_000,
+        nextDailyAt: (finite(lastDaily?.at) ?? finite(this.state.champion?.activatedAt) ?? now) + DAY
+      },
       horizons,
+      optimization,
       lastPromotionAt: Number(this.state.lastPromotionAt || 0),
       recoveredFromBackup: this.state.recoveredFromBackup === true,
       disabledReason: String(this.state.disabledReason || '')
@@ -931,9 +1662,10 @@ export class FactorLab {
 
   query(parameters = {}) {
     const view = String(parameters.view || 'summary');
-    if (!['summary', 'factors', 'trades', 'history'].includes(view)) throw Object.assign(new Error('invalid_factor_lab_view'), { statusCode: 400 });
+    if (!['summary', 'factors', 'trades', 'positions', 'samples', 'reports', 'history'].includes(view)) throw Object.assign(new Error('invalid_factor_lab_view'), { statusCode: 400 });
     const limit = clamp(Number.parseInt(parameters.limit || '50', 10) || 50, 1, 100);
     const cursor = Math.max(0, Number.parseInt(parameters.cursor || '0', 10) || 0);
+    this.syncCollections();
     if (view === 'summary') return { view, summary: this.summary() };
     let rows;
     if (view === 'factors') {
@@ -950,9 +1682,12 @@ export class FactorLab {
       changedPaths: Array.isArray(row.changedPaths) ? row.changedPaths.slice(0, 4).map(value => String(value).slice(0, 80)) : [],
       reason: String(row.reason || '').slice(0, 80)
     }));
+    else if (view === 'reports') rows = [...this.state.reports].reverse().map(publicReport);
     else {
       const horizon = Object.hasOwn(SHADOW_HORIZONS, parameters.horizon) ? parameters.horizon : 'm10';
-      rows = [...this.state.trades].reverse()
+      const source = view === 'positions' ? this.state.positions
+        : view === 'samples' ? this.state.referenceSamples : this.state.trades;
+      rows = [...source].reverse()
         .filter(row => !parameters.chain || row.chain === parameters.chain)
         .filter(row => !parameters.cohort || row.cohort === parameters.cohort)
         .filter(row => !parameters.strategyVersion || row.strategyVersion === parameters.strategyVersion)
@@ -962,19 +1697,23 @@ export class FactorLab {
           return parameters.result === 'profit' ? Number.isFinite(value) && value > 0
             : parameters.result === 'loss' ? Number.isFinite(value) && value <= 0
               : parameters.result === 'missing' ? !Number.isFinite(value) : false;
-        }).map(publicTrade);
+        }).map(view === 'positions' ? publicPosition : publicTrade);
     }
     const page = rows.slice(cursor, cursor + limit);
     return { view, rows: page, nextCursor: cursor + page.length < rows.length ? String(cursor + page.length) : null, total: rows.length };
   }
 
   exportPublic() {
+    this.syncCollections();
     return {
       version: FACTOR_LAB_VERSION,
       exportedAt: this.now(),
       summary: this.summary(),
       factors: factorQualityRows(this.state.trades),
       trades: this.state.trades.map(publicTrade),
+      positions: this.state.positions.map(publicPosition),
+      referenceSamples: this.state.referenceSamples.map(publicTrade),
+      reports: this.state.reports.map(publicReport),
       aggregates: this.state.aggregates.map(publicAggregate),
       history: this.query({ view: 'history', limit: 100 }).rows
     };

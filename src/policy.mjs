@@ -8,10 +8,10 @@ const DEFAULT_POLICY = {
     maxMarketCap: 150_000,
     priorityMinMarketCap: 20_000,
     priorityMaxMarketCap: 80_000,
-    minLiquidity: 3_000,
+    minLiquidity: 5_000,
     strictLiquidity: 8_000,
     minAgeMinutes: 5,
-    maxAgeMinutes: 10_080
+    maxAgeMinutes: 60
   },
   live: {
     minMarketCap: 10_000,
