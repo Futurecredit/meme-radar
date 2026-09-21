@@ -24,7 +24,8 @@
     "doctor": "node scripts/setup.mjs --check",
     "release:audit": "node scripts/release-audit.mjs",
     "once": "node --use-env-proxy src/main.mjs --once",
-    "test": "node --test"
+    "test": "node --test",
+    "smoke:data-trust": "node scripts/testing/data-trust-smoke.mjs"
   },
   "dependencies": {
     "gmgn-cli": "1.5.7"
