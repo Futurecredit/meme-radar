@@ -14,7 +14,7 @@ export const SHADOW_NOTIONAL_USDC = 100;
 export const PORTFOLIO_INITIAL_USDC = 1_000;
 export const PORTFOLIO_STAKE_USDC = 50;
 export const PORTFOLIO_MAX_OPEN = 5;
-export const FIXED_ROUND_TRIP_COST = 0.03;
+export const FIXED_ROUND_TRIP_COST = 0.05;
 export const SHADOW_HORIZONS = Object.freeze({
   m5: 5 * 60_000,
   m10: 10 * 60_000,
@@ -242,14 +242,18 @@ export function liquidityImpact(liquidityUsd) {
   return clamp(SHADOW_NOTIONAL_USDC / Math.max((liquidity || 0) / 2, SHADOW_NOTIONAL_USDC), 0, 0.25);
 }
 
-export function shadowReturn({ entryPrice, exitPrice, entryLiquidity, exitLiquidity = entryLiquidity }) {
+export function shadowReturn({ entryPrice, exitPrice, entryLiquidity, exitLiquidity = entryLiquidity,
+  costModelVersion = COST_MODEL_VERSION }) {
   const entry = finite(entryPrice);
   const exit = finite(exitPrice);
   if (!(entry > 0) || !(exit > 0)) return -1;
+  const legacy = Number(costModelVersion) > 0 && Number(costModelVersion) < COST_MODEL_VERSION;
+  const entryRate = legacy ? 0.015 : ENTRY_FIXED_COST_RATE;
+  const exitRate = legacy ? 0.015 : EXIT_FIXED_COST_RATE;
   const entryImpact = liquidityImpact(entryLiquidity);
   const exitImpact = liquidityImpact(exitLiquidity);
-  return clamp((exit / entry) * (1 - ENTRY_FIXED_COST_RATE) * (1 - entryImpact)
-    * (1 - EXIT_FIXED_COST_RATE) * (1 - exitImpact) - 1, -1, 1000);
+  return clamp((exit / entry) * (1 - entryRate) * (1 - entryImpact)
+    * (1 - exitRate) * (1 - exitImpact) - 1, -1, 1000);
 }
 
 function factorSnapshot(candidate) {
@@ -350,12 +354,14 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     }
     return false;
   }
+  const legacyCost = Number(trade.costModelVersion) > 0 && Number(trade.costModelVersion) < COST_MODEL_VERSION;
   const entryImpact = liquidityImpact(trade.entry.liquidity);
   const exitLiquidity = finite(sample.liquidity) ?? trade.entry.liquidity;
   const exitImpact = liquidityImpact(exitLiquidity);
   const dynamicCostRate = 1 - (1 - entryImpact) * (1 - exitImpact);
   const grossReturn = Number(sample.price) / trade.entry.price - 1;
-  const netReturn = shadowReturn({ entryPrice: trade.entry.price, exitPrice: Number(sample.price), entryLiquidity: trade.entry.liquidity, exitLiquidity });
+  const netReturn = shadowReturn({ entryPrice: trade.entry.price, exitPrice: Number(sample.price),
+    entryLiquidity: trade.entry.liquidity, exitLiquidity, costModelVersion: trade.costModelVersion });
   trade.samples[job.key] = {
     targetAt: job.targetAt,
     at: Number(sample.at),
@@ -364,7 +370,7 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
     liquidityEstimated: finite(sample.liquidity) === null,
     source: String(sample.source || 'GMGN_1M_CLOSE'),
     grossReturn,
-    fixedCostRate: FIXED_ROUND_TRIP_COST,
+    fixedCostRate: legacyCost ? 0.03 : FIXED_ROUND_TRIP_COST,
     dynamicCostRate,
     observedReturn: netReturn,
     conservativeReturn: netReturn,
@@ -415,6 +421,7 @@ export function evaluatePromotion(metrics = {}) {
 
 function defaultState(policy, now) {
   const strategy = defaultSoftStrategy(policy);
+  const portfolioEpoch = createPortfolioEpoch(now);
   return {
     version: FACTOR_LAB_VERSION,
     autoPromotionEnabled: true,
@@ -426,9 +433,31 @@ function defaultState(policy, now) {
     reports: [],
     trades: [],
     aggregates: [],
+    portfolioEpoch,
     history: [{ at: now, type: 'BASELINE_CREATED', strategyVersion: strategyFingerprint(strategy), reason: 'initial_policy' }],
     lastPromotionAt: 0,
     disabledReason: ''
+  };
+}
+
+function createPortfolioEpoch(now) {
+  return {
+    id: hash(`portfolio:${COST_MODEL_VERSION}:${now}`).slice(0, 24),
+    startedAt: Number(now),
+    costModelVersion: COST_MODEL_VERSION,
+    fixedCostRate: FIXED_ROUND_TRIP_COST
+  };
+}
+
+function normalizePortfolioEpoch(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !String(value.id || '') || finite(value.startedAt) === null
+    || Number(value.costModelVersion) !== COST_MODEL_VERSION) return null;
+  return {
+    id: String(value.id).slice(0, 64),
+    startedAt: Number(value.startedAt),
+    costModelVersion: COST_MODEL_VERSION,
+    fixedCostRate: FIXED_ROUND_TRIP_COST
   };
 }
 
@@ -498,6 +527,19 @@ function migrateState(raw, policy, now) {
     }
   }
   if (portfolioMigrated) history.push({ at: now, type: 'PORTFOLIO_LIMITS_APPLIED', reason: 'finite_bankroll_v1' });
+  let portfolioEpoch = normalizePortfolioEpoch(raw.portfolioEpoch);
+  if (!portfolioEpoch) {
+    portfolioEpoch = createPortfolioEpoch(now);
+    for (const position of positions) {
+      if (position.portfolioStatus === 'RESERVED' && !(Number(position.allocatedUsdc) > 0)) {
+        position.portfolioStatus = 'CANCELLED_EPOCH_RESET';
+        position.portfolioStakeUsdc = 0;
+        position.entry = { ...position.entry, missingKind: 'epoch_reset', missingAt: now };
+      }
+    }
+    history.push({ at: now, type: 'PORTFOLIO_EPOCH_STARTED', reason: 'user_reset_cost_v3',
+      portfolioEpochId: portfolioEpoch.id, costModelVersion: COST_MODEL_VERSION });
+  }
   return {
     version: FACTOR_LAB_VERSION,
     autoPromotionEnabled: raw.autoPromotionEnabled !== false,
@@ -513,6 +555,7 @@ function migrateState(raw, policy, now) {
     reports: Array.isArray(raw.reports) ? raw.reports.slice(-1_000) : [],
     trades: [...positions, ...referenceSamples],
     aggregates,
+    portfolioEpoch,
     history,
     lastPromotionAt: finite(raw.lastPromotionAt) ?? 0,
     disabledReason: typeof raw.disabledReason === 'string' ? raw.disabledReason.slice(0, 80) : ''
@@ -632,6 +675,7 @@ function publicTrade(trade) {
     cohort: String(trade.cohort || '').slice(0, 24), exploration: trade.exploration === true,
     evidenceTier: String(trade.evidenceTier || '').slice(0, 24), notionalUsdc: finite(trade.notionalUsdc),
     signalAt: finite(trade.signalAt), strategyVersion: String(trade.strategyVersion || '').slice(0, 64),
+    portfolioEpochId: String(trade.portfolioEpochId || '').slice(0, 64),
     initialDecision: String(trade.initialDecision || '').slice(0, 32), latestDecision: String(trade.latestDecision || '').slice(0, 32),
     chaseRisk: trade.chaseRisk === true, matchedTradeId: String(trade.matchedTradeId || '').slice(0, 64),
     factors: {
@@ -666,11 +710,16 @@ function publicPosition(position) {
   };
 }
 
-function portfolioSnapshot(trades = [], aggregates = []) {
-  const positions = trades.filter(row => row?.cohort === 'signal' && row?.legacyFixedHorizonOnly !== true);
+function portfolioSnapshot(trades = [], aggregates = [], epoch = null) {
+  const epochId = String(epoch?.id || '');
+  const positions = trades.filter(row => row?.cohort === 'signal' && row?.legacyFixedHorizonOnly !== true
+    && (!epochId || row.portfolioEpochId === epochId));
   const archived = aggregates.reduce((total, row) => {
-    total.realized += Number(row?.capital?.realizedNetUsdc || 0);
-    total.turnover += Number(row?.capital?.allocatedUsdc || 0);
+    const capital = epochId
+      ? (Array.isArray(row?.portfolioEpochs) ? row.portfolioEpochs.find(item => item?.id === epochId)?.capital : null)
+      : row?.capital;
+    total.realized += Number(capital?.realizedNetUsdc || 0);
+    total.turnover += Number(capital?.allocatedUsdc || 0);
     return total;
   }, { realized: 0, turnover: 0 });
   const cashflowNet = positions.reduce((sum, row) => sum + (Array.isArray(row.cashflows)
@@ -684,6 +733,10 @@ function portfolioSnapshot(trades = [], aggregates = []) {
   const turnoverUsdc = archived.turnover + positions.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0);
   return {
     initialUsdc: PORTFOLIO_INITIAL_USDC,
+    epochId,
+    epochStartedAt: finite(epoch?.startedAt),
+    costModelVersion: finite(epoch?.costModelVersion) ?? COST_MODEL_VERSION,
+    fixedCostRate: finite(epoch?.fixedCostRate ?? epoch?.allInCostRate) ?? FIXED_ROUND_TRIP_COST,
     stakeUsdc: PORTFOLIO_STAKE_USDC,
     maxOpen: PORTFOLIO_MAX_OPEN,
     cashBalanceUsdc,
@@ -828,6 +881,20 @@ function archiveTrades(trades, now) {
     const reason = String(position.exitReason || 'UNKNOWN');
     exitCounts[reason] = (exitCounts[reason] || 0) + 1;
   }
+  const portfolioEpochs = [...new Set(positions.map(row => String(row.portfolioEpochId || '')).filter(Boolean))]
+    .map(id => {
+      const rows = positions.filter(row => row.portfolioEpochId === id);
+      const counts = {};
+      for (const row of rows) counts[row.exitReason || 'UNKNOWN'] = (counts[row.exitReason || 'UNKNOWN'] || 0) + 1;
+      return { id, capital: {
+        positionCount: rows.length,
+        allocatedUsdc: rows.reduce((sum, row) => sum + Number(row.allocatedUsdc || 0), 0),
+        recoveredPrincipalUsdc: rows.reduce((sum, row) => sum + Math.min(Number(row.allocatedUsdc || 0), Number(row.recoveredUsdc || 0)), 0),
+        principalRecovered: rows.filter(row => Number(row.recoveredUsdc || 0) >= Number(row.allocatedUsdc || 100)).length,
+        realizedNetUsdc: rows.reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0),
+        exitCounts: counts
+      } };
+    });
   return {
     at: now, type: 'PRUNED', count: trades.length,
     capital: {
@@ -838,6 +905,7 @@ function archiveTrades(trades, now) {
       realizedNetUsdc: positions.reduce((sum, row) => sum + Number(row.recoveredUsdc || 0) - Number(row.allocatedUsdc || 0), 0),
       exitCounts
     },
+    portfolioEpochs,
     groups: [...groups.values()].map(group => ({
       strategyVersion: group.strategyVersion, chain: group.chain, cohort: group.cohort, horizon: group.horizon,
       count: group.count, observedCount: group.observed.length, conservativeCount: group.conservative.length,
@@ -1023,7 +1091,8 @@ export class FactorLab {
       strategy: this.state.champion.strategy, exploration
     });
     if (cohort === 'signal') {
-      const portfolio = portfolioSnapshot(this.state.trades, this.state.aggregates);
+      trade.portfolioEpochId = this.state.portfolioEpoch.id;
+      const portfolio = portfolioSnapshot(this.state.trades, this.state.aggregates, this.state.portfolioEpoch);
       if (portfolio.availableSlots < 1) {
         trade.portfolioStakeUsdc = 0;
         trade.portfolioStatus = 'SKIPPED_CAPACITY';
@@ -1285,10 +1354,12 @@ export class FactorLab {
         p10: percentile(conservative, 0.10)
       }];
     }));
+    const epochId = String(this.state.portfolioEpoch?.id || '');
     const positions = this.state.trades.filter(row => row.cohort === 'signal'
-      && row.legacyFixedHorizonOnly !== true && Number(row.allocatedUsdc) > 0);
+      && row.legacyFixedHorizonOnly !== true && row.portfolioEpochId === epochId && Number(row.allocatedUsdc) > 0);
     const archivedCapital = (this.state.aggregates || []).reduce((total, row) => {
-      const capital = row?.capital || {};
+      const capital = (Array.isArray(row?.portfolioEpochs)
+        ? row.portfolioEpochs.find(item => item?.id === epochId)?.capital : null) || {};
       total.positionCount += Number(capital.positionCount || 0);
       total.allocatedUsdc += Number(capital.allocatedUsdc || 0);
       total.recoveredPrincipalUsdc += Number(capital.recoveredPrincipalUsdc || 0);
@@ -1327,7 +1398,7 @@ export class FactorLab {
       matchedPairs: signals.filter(row => row.matchedTradeId).length,
       capital: { positionCount, allocatedUsdc, openPositions,
         unrecoveredPrincipalUsdc, recoveredPrincipalUsdc, principalRecovered, realizedNetUsdc },
-      portfolio: portfolioSnapshot(this.state.trades, this.state.aggregates),
+      portfolio: portfolioSnapshot(this.state.trades, this.state.aggregates, this.state.portfolioEpoch),
       exits: {
         stopRate: rate('STOP_LOSS'), principalRecoveryRate: positionCount ? principalRecovered / positionCount : 0,
         trailingRate: rate('TRAILING_DRAWDOWN'), timeoutRate: rate('EXPERIMENT_TIMEOUT'),

@@ -104,6 +104,8 @@ test('status/export include sanitized factor lab data and manual policy save cre
   assert.equal(status.body.factorLabSummary.championVersion, baseline);
   assert.deepEqual(status.body.factorLabSummary.portfolio, {
     initialUsdc: 1000, stakeUsdc: 50, maxOpen: 5,
+    epochId: lab.state.portfolioEpoch.id,
+    epochStartedAt: 1000, costModelVersion: 3, fixedCostRate: 0.05,
     cashBalanceUsdc: 1000, availableCashUsdc: 1000, deployedUsdc: 0, reservedUsdc: 0,
     bookEquityUsdc: 1000, turnoverUsdc: 0, openPositions: 0, reservedPositions: 0,
     availableSlots: 5, skippedCount: 0

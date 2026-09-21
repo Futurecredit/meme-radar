@@ -415,6 +415,9 @@ function publicFactorLabSummary(source = {}) {
     },
     portfolio: {
       initialUsdc: finite(source.portfolio?.initialUsdc), stakeUsdc: finite(source.portfolio?.stakeUsdc),
+      epochId: text(source.portfolio?.epochId, 64),
+      epochStartedAt: finite(source.portfolio?.epochStartedAt), costModelVersion: finite(source.portfolio?.costModelVersion),
+      fixedCostRate: finite(source.portfolio?.fixedCostRate),
       maxOpen: finite(source.portfolio?.maxOpen), cashBalanceUsdc: finite(source.portfolio?.cashBalanceUsdc),
       availableCashUsdc: finite(source.portfolio?.availableCashUsdc), deployedUsdc: finite(source.portfolio?.deployedUsdc),
       reservedUsdc: finite(source.portfolio?.reservedUsdc), bookEquityUsdc: finite(source.portfolio?.bookEquityUsdc),

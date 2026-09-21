@@ -41,7 +41,7 @@ function candidate(overrides = {}) {
   };
 }
 
-test('shadow trade enters on first completed minute and applies 3% plus liquidity impact', () => {
+test('shadow trade applies the fixed 5% envelope plus dynamic liquidity impact', () => {
   const trade = createShadowTrade(candidate(), { cohort: 'signal', signalAt: 61_000, policy, strategy: defaultSoftStrategy(policy) });
   assert.equal(trade.entry.targetAt, 120_000);
   assert.equal(dueShadowJobs([trade], 119_999).length, 0);
@@ -51,8 +51,8 @@ test('shadow trade enters on first completed minute and applies 3% plus liquidit
   assert.equal(trade.entry.price, 1);
   const five = dueShadowJobs([trade], 420_000).find(job => job.key === 'm5');
   applyPriceSample(trade, five, { at: 420_000, price: 1.1 });
-  assert.ok(Math.abs(trade.samples.m5.netReturn - 0.024984499) < 1e-9);
-  assert.equal(trade.samples.m5.fixedCostRate, 0.03);
+  assert.ok(Math.abs(trade.samples.m5.netReturn - 0.004278275) < 1e-9);
+  assert.equal(trade.samples.m5.fixedCostRate, 0.05);
   assert.ok(Math.abs(trade.samples.m5.dynamicCostRate - 0.0396) < 1e-9);
 });
 
@@ -337,7 +337,8 @@ test('low coverage keeps a challenger collecting and malformed persisted strateg
     fs.writeFileSync(path.join(dir, 'factor-lab.json'), JSON.stringify({ version: 1, champion: null, trades: [], history: [] }));
     const repaired = new FactorLab(dir, { policy, now: () => 4 });
     assert.ok(repaired.effectiveStrategy());
-    assert.equal(repaired.state.history.at(-1).type, 'STATE_REPAIRED');
+    assert.ok(repaired.state.history.some(item => item.type === 'STATE_REPAIRED'));
+    assert.equal(repaired.state.history.at(-1).type, 'PORTFOLIO_EPOCH_STARTED');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

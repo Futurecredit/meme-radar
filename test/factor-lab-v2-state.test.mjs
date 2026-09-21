@@ -116,6 +116,7 @@ test('finite bankroll never tops up after losses and skips entries when less tha
     const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1 });
     lab.state.trades.push({
       id: 'depleted', cohort: 'signal', chain: 'bsc', address: '0x0000000000000000000000000000000000000099',
+      portfolioEpochId: lab.state.portfolioEpoch.id,
       signalAt: 0, portfolioStatus: 'CLOSED', portfolioStakeUsdc: 1_000, status: 'CLOSED',
       allocatedUsdc: 1_000, recoveredUsdc: 20, entry: { at: 1, price: 1 }, samples: {},
       cashflows: [{ at: 1, kind: 'ENTRY', netUsdc: -1_000 }, { at: 2, kind: 'STOP_LOSS', netUsdc: 20 }]
@@ -125,6 +126,52 @@ test('finite bankroll never tops up after losses and skips entries when less tha
     assert.equal(skipped.portfolioStakeUsdc, 0);
     assert.equal(lab.summary(3).portfolio.cashBalanceUsdc, 20);
     assert.equal(lab.summary(3).portfolio.availableCashUsdc, 20);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cost model V3 starts one fresh portfolio epoch while preserving old factor history', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-portfolio-epoch-'));
+  try {
+    let lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1 });
+    const pending = lab.recordCandidate(row(), { now: 1 });
+    lab.state.trades.push({
+      id: 'old-funded', cohort: 'signal', chain: 'bsc', address: '0x0000000000000000000000000000000000000099',
+      signalAt: 2, portfolioStatus: 'CLOSED', portfolioStakeUsdc: 100, status: 'CLOSED',
+      allocatedUsdc: 100, recoveredUsdc: 150, realizedNetUsdc: 50,
+      entry: { at: 3, price: 1 }, samples: { m15: { conservativeReturn: .5 } },
+      cashflows: [{ at: 3, kind: 'ENTRY', netUsdc: -100 }, { at: 4, kind: 'EXIT', netUsdc: 150 }]
+    });
+    delete lab.state.portfolioEpoch;
+    lab.save();
+
+    lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1_000 });
+    assert.equal(lab.state.positions.length, 2);
+    assert.equal(lab.state.positions.find(item => item.id === 'old-funded').samples.m15.conservativeReturn, .5);
+    assert.equal(lab.state.positions.find(item => item.id === pending.id).portfolioStatus, 'CANCELLED_EPOCH_RESET');
+    assert.equal(lab.state.positions.find(item => item.id === pending.id).portfolioStakeUsdc, 0);
+    assert.equal(lab.state.history.at(-1).type, 'PORTFOLIO_EPOCH_STARTED');
+    assert.equal(lab.state.history.at(-1).reason, 'user_reset_cost_v3');
+
+    const summary = lab.summary(1_000);
+    assert.equal(summary.portfolio.epochStartedAt, 1_000);
+    assert.equal(summary.portfolio.costModelVersion, 3);
+    assert.equal(summary.portfolio.fixedCostRate, .05);
+    assert.equal(summary.portfolio.cashBalanceUsdc, 1_000);
+    assert.equal(summary.portfolio.availableCashUsdc, 1_000);
+    assert.equal(summary.portfolio.turnoverUsdc, 0);
+    assert.equal(summary.portfolio.skippedCount, 0);
+    assert.equal(summary.capital.positionCount, 0);
+    assert.equal(summary.capital.allocatedUsdc, 0);
+    assert.equal(summary.capital.realizedNetUsdc, 0);
+
+    const next = lab.recordCandidate(row({ address: '0x0000000000000000000000000000000000000100' }), { now: 1_001 });
+    assert.equal(next.portfolioEpochId, lab.state.portfolioEpoch.id);
+    assert.equal(next.portfolioStatus, 'RESERVED');
+    assert.equal(lab.summary(1_001).portfolio.availableCashUsdc, 950);
+    lab.save();
+    const restarted = new FactorLab(dir, { policy: defaultPolicy(), now: () => 2_000 });
+    assert.equal(restarted.state.portfolioEpoch.id, lab.state.portfolioEpoch.id);
+    assert.equal(restarted.state.history.filter(item => item.type === 'PORTFOLIO_EPOCH_STARTED').length, 1);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -268,8 +315,10 @@ test('retention protects open positions and archives closed capital totals', () 
     const now = 100 * 24 * 60 * 60_000;
     const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
     lab.state.trades = [
-      { id: 'open', cohort: 'signal', signalAt: 1, status: 'OPEN', allocatedUsdc: 100, recoveredUsdc: 0, samples: {} },
-      { id: 'closed', cohort: 'signal', signalAt: 2, status: 'CLOSED', allocatedUsdc: 100, recoveredUsdc: 120,
+      { id: 'open', cohort: 'signal', portfolioEpochId: lab.state.portfolioEpoch.id,
+        signalAt: 1, status: 'OPEN', allocatedUsdc: 100, recoveredUsdc: 0, samples: {} },
+      { id: 'closed', cohort: 'signal', portfolioEpochId: lab.state.portfolioEpoch.id,
+        signalAt: 2, status: 'CLOSED', allocatedUsdc: 100, recoveredUsdc: 120,
         realizedNetUsdc: 20, exitReason: 'TRAILING_DRAWDOWN', samples: {} }
     ];
     lab.prune(now);

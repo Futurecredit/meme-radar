@@ -1,7 +1,7 @@
-export const POSITION_COST_MODEL_VERSION = 2;
+export const POSITION_COST_MODEL_VERSION = 3;
 export const EXIT_POLICY_VERSION = 1;
-export const ENTRY_FIXED_COST_RATE = 0.015;
-export const EXIT_FIXED_COST_RATE = 0.015;
+export const ENTRY_FIXED_COST_RATE = 0.025;
+export const EXIT_FIXED_COST_RATE = 0.025;
 export const STOP_LIQUIDATION_USDC = 70;
 export const RECOVERY_LIQUIDATION_USDC = 200;
 export const PRINCIPAL_USDC = 100;
@@ -25,8 +25,15 @@ function principalFor(position) {
   return allocated > 0 ? allocated : reserved > 0 ? reserved : PRINCIPAL_USDC;
 }
 
+function usesLegacyDynamicCost(position) {
+  return Number(position?.costModelVersion) > 0 && Number(position.costModelVersion) < POSITION_COST_MODEL_VERSION;
+}
+
 function exitMultiplier(position, liquidity) {
-  return (1 - EXIT_FIXED_COST_RATE) * (1 - positionLiquidityImpact(liquidity, principalFor(position)));
+  const legacy = usesLegacyDynamicCost(position);
+  const fixedRate = legacy ? 0.015 : EXIT_FIXED_COST_RATE;
+  const impact = positionLiquidityImpact(liquidity, principalFor(position));
+  return (1 - fixedRate) * (1 - impact);
 }
 
 export function netLiquidationValue(position, price, liquidity) {
@@ -37,11 +44,13 @@ export function netLiquidationValue(position, price, liquidity) {
 }
 
 function cashflow(position, { at, kind, units, price, liquidity, netUsdc }) {
+  const legacy = usesLegacyDynamicCost(position);
   position.cashflows ||= [];
   position.cashflows.push({
     at: Number(at), kind: String(kind), units: Number(units), price: Number(price),
     liquidity: Number(liquidity), netUsdc: Number(netUsdc),
-    fixedCostRate: EXIT_FIXED_COST_RATE, dynamicImpactRate: positionLiquidityImpact(liquidity, principalFor(position))
+    fixedCostRate: legacy ? 0.015 : EXIT_FIXED_COST_RATE,
+    dynamicImpactRate: positionLiquidityImpact(liquidity, principalFor(position))
   });
 }
 
@@ -65,9 +74,9 @@ export function openShadowPosition(position, sample) {
     || !(price > 0) || at === null || !(liquidity > 0)) return false;
   if (position.entry?.targetAt && Math.abs(at - Number(position.entry.targetAt)) > 60_000) return false;
   const principal = principalFor(position);
+  position.costModelVersion = POSITION_COST_MODEL_VERSION;
   const entryImpact = positionLiquidityImpact(liquidity, principal);
   const units = principal * (1 - ENTRY_FIXED_COST_RATE) * (1 - entryImpact) / price;
-  position.costModelVersion = POSITION_COST_MODEL_VERSION;
   position.exitPolicyVersion = EXIT_POLICY_VERSION;
   position.allocatedUsdc = principal;
   position.recoveredUsdc = 0;

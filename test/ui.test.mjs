@@ -347,7 +347,7 @@ test('真实影子仓位常驻结果总览并展示全链买卖时间价格、�
 });
 
 test('有限本金账户区分本金、现金、占用、权益、累计成交额和容量跳过', () => {
-  for (const id of ['portfolioInitial', 'portfolioEquity', 'portfolioCash', 'portfolioDeployed', 'portfolioTurnover', 'portfolioSlots', 'portfolioSkipped']) {
+  for (const id of ['portfolioInitial', 'portfolioEpoch', 'portfolioEquity', 'portfolioCash', 'portfolioDeployed', 'portfolioTurnover', 'portfolioSlots', 'portfolioSkipped']) {
     assert.match(html, new RegExp('id="' + id + '"'));
   }
   assert.match(html, /1000\s*USDC/);
@@ -358,4 +358,9 @@ test('有限本金账户区分本金、现金、占用、权益、累计成交�
   assert.match(html, /资金\/容量跳过/);
   assert.match(html, /portfolio\.availableCashUsdc/);
   assert.match(html, /portfolio\.skippedCount/);
+  assert.match(html, /portfolio\.epochStartedAt/);
+  assert.match(html, /固定成本5%.*低流动性.*动态滑点/);
+  assert.match(html, /portfolio\.epochId/);
+  assert.match(html, /row\.portfolioEpochId === currentEpochId/);
+  assert.match(html, /历史账期/);
 });

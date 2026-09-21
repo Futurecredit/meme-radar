@@ -42,8 +42,9 @@ test('daily reports are immutable snapshots and capital summary uses positions o
   try {
     const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 1 });
     lab.state.trades.push(
-      completedPosition(1),
-      completedPosition(2, { status: 'RUNNER', recoveredUsdc: 100, remainingUnits: 20, exitReason: undefined, closedAt: undefined }),
+      completedPosition(1, { portfolioEpochId: lab.state.portfolioEpoch.id }),
+      completedPosition(2, { portfolioEpochId: lab.state.portfolioEpoch.id,
+        status: 'RUNNER', recoveredUsdc: 100, remainingUnits: 20, exitReason: undefined, closedAt: undefined }),
       { ...completedPosition(3), cohort: 'control', notionalUsdc: 0, allocatedUsdc: undefined, recoveredUsdc: undefined }
     );
     const daily = lab.reportTick(24 * 60 * 60_000 + 1).find(report => report.type === 'DAILY');

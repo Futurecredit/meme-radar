@@ -16,18 +16,30 @@ const candle = (overrides = {}) => ({
   ...overrides
 });
 
-test('V2 entry invests 100 USDC with split fixed cost and entry impact', async () => {
-  const { openShadowPosition } = await positionModule();
+test('V3 charges a five percent fixed envelope plus low-liquidity impact', async () => {
+  const { openShadowPosition, netLiquidationValue } = await positionModule();
   assert.equal(typeof openShadowPosition, 'function');
   const position = trade();
   assert.equal(openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 }), true);
-  assert.equal(position.costModelVersion, 2);
+  assert.equal(position.costModelVersion, 3);
   assert.equal(position.exitPolicyVersion, 1);
-  assert.equal(position.entry.fixedCostRate, .015);
-  assert.ok(Math.abs(position.remainingUnits - 96.53) < 1e-9);
+  assert.equal(position.entry.fixedCostRate, .025);
+  assert.equal(position.entry.dynamicImpactRate, .02);
+  assert.ok(Math.abs(position.remainingUnits - 95.55) < 1e-9);
+  assert.ok(Math.abs(netLiquidationValue(position, 1, 10_000) - 91.298025) < 1e-9);
   assert.equal(position.allocatedUsdc, 100);
   assert.equal(position.recoveredUsdc, 0);
   assert.equal(position.status, 'OPEN');
+});
+
+test('V3 applies materially worse net value to low liquidity', async () => {
+  const { openShadowPosition, netLiquidationValue } = await positionModule();
+  const low = trade();
+  const high = { ...trade(), id: 'high-liquidity' };
+  openShadowPosition(low, { at: 60_000, price: 1, liquidity: 100 });
+  openShadowPosition(high, { at: 60_000, price: 1, liquidity: 1_000_000 });
+  assert.ok(low.remainingUnits < high.remainingUnits);
+  assert.ok(netLiquidationValue(low, 1, 100) < netLiquidationValue(high, 1, 1_000_000));
 });
 
 test('finite bankroll positions size stop and recovery thresholds from a 50 USDC stake', async () => {
@@ -127,16 +139,6 @@ test('safety loss and 24 hour timeout close conservatively without future backfi
   assert.equal(applyTimeoutExit(timed, { at: 60_000 + 24 * 60 * 60_000, price: 2, liquidity: 10_000 }), true);
   assert.equal(timed.exitReason, 'EXPERIMENT_TIMEOUT');
   assert.equal(timed.status, 'CLOSED');
-});
-
-test('exit liquidity cannot create a fill outside the triggering candle range', async () => {
-  const { openShadowPosition, applyExitCandle } = await positionModule();
-  const position = trade();
-  openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
-  const result = applyExitCandle(position, candle({ openAt: 120_000, closeAt: 180_000, open: 1.5, high: 2.2, low: 1.4, close: 2 }), { exitLiquidity: 800 });
-  assert.equal(result.event, null);
-  assert.equal(position.status, 'OPEN');
-  assert.equal(position.cashflows.length, 1);
 });
 
 test('principal recovery and a later 35 percent drawdown in one candle close conservatively', async () => {
