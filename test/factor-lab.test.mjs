@@ -353,7 +353,7 @@ test('promotion metrics require completed signal-control pairs and bootstrap who
   assert.equal(metrics.bootstrapStrata >= 1, true);
 });
 
-test('automationTick promotes only from future completed signal-control populations', () => {
+test('automationTick remains collect-only even with a promotion-ready challenger', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-automatic-e2e-'));
   try {
     const lab = new FactorLab(dir, { policy, now: () => 1 });
@@ -380,11 +380,18 @@ test('automationTick promotes only from future completed signal-control populati
       }
       lab.state.trades.push(signal, control);
     }
+    const before = structuredClone({
+      champion: lab.state.champion,
+      challenger: lab.state.challenger,
+      history: lab.state.history
+    });
+    lab.state.autoPromotionEnabled = true;
     const result = lab.automationTick(start + span + 60 * 60_000);
-    assert.equal(result.action, 'promoted');
-    assert.equal(result.metrics.completed15m, 80);
-    assert.equal(result.metrics.matchedPairs, 80);
-    assert.ok(result.metrics.bootstrapLower > 0);
+    assert.equal(result.action, 'collect_only');
+    assert.equal(result.quality.collectOnly, true);
+    assert.deepEqual(lab.state.champion, before.champion);
+    assert.deepEqual(lab.state.challenger, before.challenger);
+    assert.deepEqual(lab.state.history, before.history);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { atomicJson, readJsonWithBackup, tokenKey } from './local-store.mjs';
 import { FactorPathStore } from './factor-path-store.mjs';
 import { normalizePathCandles, summarizePath } from './factor-path.mjs';
+import { buildDataQualitySummary } from './factor-data-quality.mjs';
 import {
   ENTRY_FIXED_COST_RATE, EXIT_FIXED_COST_RATE, EXIT_POLICY_VERSION,
   MAX_HOLD_MS, POSITION_COST_MODEL_VERSION, applyExitCandle, applySafetyExit, applyTimeoutExit, openShadowPosition, positionLiquidityImpact
@@ -1115,41 +1116,8 @@ export class FactorLab {
   }
 
   automationTick(now = this.now()) {
-    if (!this.state.autoPromotionEnabled || this.state.disabledReason) return { action: 'paused' };
-    try {
-      if (this.state.previousChampion && this.state.champion.activatedAt) {
-        const rollback = comparisonMetrics(this.state.trades, this.state.previousChampion.strategy,
-          this.state.champion.strategy, this.state.champion.activatedAt, `rollback:${this.state.champion.version}`, now);
-        const coverage = Math.min(...MAIN_HORIZONS.map(key => rollback.coverage[key]));
-        const result = this.evaluateRollback({ completed: rollback.completed15m,
-          weightedMedianUplift: rollback.weightedMedianUplift, coverage }, now);
-        if (result.rolledBack) return { action: 'rolled_back' };
-      }
-      if (this.state.challenger) {
-        const metrics = comparisonMetrics(this.state.trades, this.state.champion.strategy,
-          this.state.challenger.strategy, this.state.challenger.createdAt, this.state.challenger.version, now);
-        const result = this.evaluateChallenger(metrics, now);
-        return { action: result.promoted ? 'promoted' : 'observing', metrics, reasons: result.reasons || [] };
-      }
-      const baseline = strategyPerformance(this.state.trades, this.state.champion.strategy, 0, now);
-      const spanMs = baseline.rows.length ? Math.max(...baseline.rows.map(row => row.signalAt)) - Math.min(...baseline.rows.map(row => row.signalAt)) : 0;
-      if (baseline.completed15m < 80 || spanMs < DAY) return { action: 'collecting' };
-      const ranked = candidateMutations(this.state.champion.strategy).map(mutation => {
-        const performance = strategyPerformance(this.state.trades, mutation.strategy, 0, now);
-        const horizonUplifts = MAIN_HORIZONS.map(key => Number(performance.horizons[key].median ?? -Infinity)
-          - Number(baseline.horizons[key].median ?? 0));
-        return { ...mutation, uplift: performance.weightedMedian - baseline.weightedMedian, horizonUplifts };
-      }).filter(row => row.uplift > 0.005 && row.horizonUplifts.every(value => value > 0))
-        .sort((a, b) => b.uplift - a.uplift);
-      if (!ranked.length) return { action: 'no_candidate' };
-      this.startChallenger(ranked[0].strategy, now, ranked[0].changedPaths);
-      return { action: 'challenger_created', changedPaths: ranked[0].changedPaths };
-    } catch (error) {
-      this.state.disabledReason = 'AUTOMATION_ERROR';
-      this.state.history.push({ at: now, type: 'AUTOMATION_DISABLED', reason: 'AUTOMATION_ERROR' });
-      this.save();
-      return { action: 'disabled', error: String(error?.code || 'AUTOMATION_ERROR') };
-    }
+    const quality = buildDataQualitySummary(this.state.trades, { now });
+    return { action: 'collect_only', reason: quality.primaryBlocker, quality };
   }
 
   recordCandidate(candidate, { now = this.now(), exploration = false } = {}) {
@@ -1556,6 +1524,7 @@ export class FactorLab {
     const lastReport = (this.state.reports || []).at(-1) || null;
     const lastStage = [...(this.state.reports || [])].reverse().find(row => row.type === 'STAGE');
     const lastDaily = [...(this.state.reports || [])].reverse().find(row => row.type === 'DAILY');
+    const optimization = buildDataQualitySummary(this.state.trades, { now });
     return {
       enabled: true,
       autoPromotionEnabled: this.state.autoPromotionEnabled === true,
@@ -1584,6 +1553,7 @@ export class FactorLab {
         nextDailyAt: (finite(lastDaily?.at) ?? finite(this.state.champion?.activatedAt) ?? now) + DAY
       },
       horizons,
+      optimization,
       lastPromotionAt: Number(this.state.lastPromotionAt || 0),
       recoveredFromBackup: this.state.recoveredFromBackup === true,
       disabledReason: String(this.state.disabledReason || '')
