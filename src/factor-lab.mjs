@@ -380,8 +380,9 @@ export function applyPriceSample(trade, job, sample, failure = {}) {
   return true;
 }
 
-function matchDistance(signal, control) {
-  if (signal.chain !== control.chain || control.matchedTradeId || control.contaminatedAt) return Infinity;
+function matchDistance(signal, control, { allowMatched = false } = {}) {
+  if (signal.chain !== control.chain || control.contaminatedAt
+    || (!allowMatched && (signal.matchedTradeId || control.matchedTradeId))) return Infinity;
   const age = Math.abs(signal.signalAt - control.signalAt);
   if (age > 10 * 60_000) return Infinity;
   const ratios = ['marketCap', 'liquidity', 'ageSec'].map(key => {
@@ -403,6 +404,57 @@ export function matchControl(signal, controls) {
   control.matchedTradeId = signal.id;
   signal.matchedTradeId = control.id;
   return control;
+}
+
+export function reconcileControlMatches(trades = []) {
+  const rows = (Array.isArray(trades) ? trades : []).filter(row => row?.id);
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const signals = rows.filter(row => row.cohort === 'signal');
+  const controls = rows.filter(row => row.cohort === 'control' && !row.contaminatedAt);
+  const usedSignals = new Set();
+  const usedControls = new Set();
+
+  for (const signal of [...signals].sort((a, b) => Number(a.signalAt || 0) - Number(b.signalAt || 0)
+    || String(a.id).localeCompare(String(b.id)))) {
+    const control = byId.get(signal.matchedTradeId);
+    if (control?.cohort !== 'control' || control.contaminatedAt
+      || control.matchedTradeId !== signal.id
+      || !Number.isFinite(matchDistance(signal, control, { allowMatched: true }))
+      || usedControls.has(control.id)) continue;
+    usedSignals.add(signal.id);
+    usedControls.add(control.id);
+  }
+
+  for (const signal of signals) if (!usedSignals.has(signal.id)) delete signal.matchedTradeId;
+  for (const control of rows.filter(row => row.cohort === 'control')) {
+    if (!usedControls.has(control.id)) delete control.matchedTradeId;
+  }
+
+  const edges = [];
+  for (const signal of signals) {
+    if (usedSignals.has(signal.id)) continue;
+    for (const control of controls) {
+      if (usedControls.has(control.id)) continue;
+      const distance = matchDistance(signal, control, { allowMatched: true });
+      if (Number.isFinite(distance)) edges.push({ signal, control, distance });
+    }
+  }
+  edges.sort((a, b) => a.distance - b.distance
+    || Number(a.signal.signalAt || 0) - Number(b.signal.signalAt || 0)
+    || String(a.signal.id).localeCompare(String(b.signal.id))
+    || Number(a.control.signalAt || 0) - Number(b.control.signalAt || 0)
+    || String(a.control.id).localeCompare(String(b.control.id)));
+
+  const pairs = [];
+  for (const edge of edges) {
+    if (usedSignals.has(edge.signal.id) || usedControls.has(edge.control.id)) continue;
+    edge.signal.matchedTradeId = edge.control.id;
+    edge.control.matchedTradeId = edge.signal.id;
+    usedSignals.add(edge.signal.id);
+    usedControls.add(edge.control.id);
+    pairs.push({ signalId: edge.signal.id, controlId: edge.control.id, distance: edge.distance });
+  }
+  return pairs;
 }
 
 export function evaluatePromotion(metrics = {}) {
@@ -1083,6 +1135,7 @@ export class FactorLab {
       for (const field of ['twitter', 'website', 'gmgnUrl']) if (!duplicate[field] && links[field]) duplicate[field] = links[field];
       duplicate.latestDecision = candidate.status;
       duplicate.lastAuditedAt = now;
+      reconcileControlMatches(this.state.trades);
       this.save();
       return duplicate;
     }
@@ -1105,7 +1158,7 @@ export class FactorLab {
       }
     }
     this.state.trades.push(trade);
-    if (cohort === 'signal') matchControl(trade, this.state.trades.filter(row => row.cohort === 'control'));
+    reconcileControlMatches(this.state.trades);
     this.prune(now);
     this.save();
     return trade;
