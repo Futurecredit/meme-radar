@@ -226,6 +226,148 @@ test('open positions consume the read budget first and one OHLC path fills due h
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('one path read fills multiple horizons for an unfunded research signal', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-research-path-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let now = 1;
+  const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+  const trade = lab.recordCandidate(row(), { now: 1 });
+  trade.portfolioStatus = 'SKIPPED_CAPACITY';
+  trade.portfolioStakeUsdc = 0;
+  trade.entry = { targetAt: 60_000, at: 60_000, price: 1, liquidity: 10_000 };
+  now = 1_000_000;
+  let reads = 0;
+  const gmgn = {
+    disabled: false,
+    nextAllowedAt: 0,
+    async candlesBetween() {
+      reads++;
+      return [
+        { openAt: 300_000, closeAt: 360_000, open: 1, high: 1.2, low: .9, close: 1.1, source: 'GMGN_1M_OHLC' },
+        { openAt: 600_000, closeAt: 660_000, open: 1.1, high: 1.3, low: 1, close: 1.2, source: 'GMGN_1M_OHLC' },
+        { openAt: 900_000, closeAt: 960_000, open: 1.2, high: 1.2, low: .8, close: .9, source: 'GMGN_1M_OHLC' }
+      ];
+    }
+  };
+  await lab.collect(gmgn, { limit: 1, now: () => now });
+  assert.equal(reads, 1);
+  assert.equal(trade.samples.m5.price, 1.1);
+  assert.equal(trade.samples.m10.price, 1.2);
+  assert.equal(trade.samples.m15.price, .9);
+  assert.equal(trade.path.observedBars, 3);
+  assert.equal(trade.path.expectedBars, 15);
+  assert.equal(trade.allocatedUsdc, undefined);
+  assert.equal(Array.isArray(trade.path.bars), false);
+});
+
+test('research path failures keep transient outcomes missing and stop after a rate limit', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-research-failures-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let now = 400_000;
+  const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+  const first = lab.recordCandidate(row(), { now: 1 });
+  const second = lab.recordCandidate(row({
+    address: '0x0000000000000000000000000000000000000002'
+  }), { now: 2 });
+  for (const trade of [first, second]) {
+    trade.portfolioStatus = 'SKIPPED_CAPACITY';
+    trade.portfolioStakeUsdc = 0;
+    trade.entry = { targetAt: 60_000, at: 60_000, price: 1, liquidity: 10_000 };
+  }
+  let calls = 0;
+  await lab.collect({
+    disabled: false, nextAllowedAt: 0,
+    async candlesBetween() {
+      calls++;
+      throw Object.assign(new Error('limited'), { code: 'GMGN_RATE_LIMITED' });
+    }
+  }, { limit: 2, now: () => now });
+  assert.equal(calls, 1);
+  assert.equal(first.path.lastFailureCode, 'RATE_LIMITED');
+  assert.equal(first.path.mfeRate, null);
+  assert.equal(first.path.maeRate, null);
+  assert.equal(first.samples.m5, undefined);
+  assert.equal(second.path, undefined);
+
+  now = first.path.nextAt;
+  await lab.collect({
+    disabled: false, nextAllowedAt: 0,
+    async candlesBetween() {
+      throw Object.assign(new Error('timeout'), { code: 'GMGN_TIMEOUT' });
+    }
+  }, { limit: 1, now: () => now });
+  assert.equal(first.path.lastFailureCode, 'RATE_LIMITED');
+  assert.equal(second.path.lastFailureCode, 'TIMEOUT');
+  assert.equal(first.samples.m5, undefined);
+  assert.equal(second.samples.m5, undefined);
+});
+
+test('confirmed untradeable paths are conservative while duplicate future bars cannot backfill 5m', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-research-integrity-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let now = 500_000;
+  const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+  const futureOnly = lab.recordCandidate(row(), { now: 1 });
+  const failed = lab.recordCandidate(row({
+    address: '0x0000000000000000000000000000000000000002'
+  }), { now: 2 });
+  for (const trade of [futureOnly, failed]) {
+    trade.portfolioStatus = 'SKIPPED_CAPACITY';
+    trade.portfolioStakeUsdc = 0;
+    trade.entry = { targetAt: 60_000, at: 60_000, price: 1, liquidity: 10_000 };
+  }
+  let call = 0;
+  await lab.collect({
+    disabled: false, nextAllowedAt: 0,
+    async candlesBetween() {
+      call++;
+      if (call === 1) return [
+        { openAt: 360_000, closeAt: 420_000, open: 1, high: 2, low: .8, close: 1.5, source: 'GMGN_1M_OHLC' },
+        { openAt: 360_000, closeAt: 420_000, open: 1, high: 2, low: .8, close: 1.5, source: 'GMGN_1M_OHLC' }
+      ];
+      throw Object.assign(new Error('cannot trade'), { code: 'UNTRADEABLE', confirmed: true });
+    }
+  }, { limit: 2, now: () => now });
+  assert.equal(futureOnly.path.observedBars, 1);
+  assert.equal(futureOnly.samples.m5, undefined);
+  assert.equal(failed.path.lastFailureCode, 'UNTRADEABLE');
+  assert.equal(failed.samples.m5.observedReturn, null);
+  assert.equal(failed.samples.m5.conservativeReturn, -1);
+});
+
+test('matched controls collect the same research horizon without receiving simulated capital', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-matched-control-path-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const now = 400_000;
+  const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+  const signal = lab.recordCandidate(row(), { now: 1 });
+  const control = lab.recordCandidate(row({
+    address: '0x0000000000000000000000000000000000000002',
+    status: 'WAIT_RECHECK', experimentEligible: false, marketCap: 42_000
+  }), { now: 2 });
+  signal.portfolioStatus = 'SKIPPED_CAPACITY';
+  signal.portfolioStakeUsdc = 0;
+  signal.entry = { targetAt: 60_000, at: 60_000, price: 1, liquidity: 10_000 };
+  control.entry = { targetAt: 60_000, at: 60_000, price: 1, liquidity: 10_000 };
+  let calls = 0;
+  await lab.collect({
+    disabled: false, nextAllowedAt: 0,
+    async candlesBetween() {
+      calls++;
+      return [{
+        openAt: 300_000, closeAt: 360_000, open: 1, high: 1.2, low: .9,
+        close: calls === 1 ? 1.1 : .95, source: 'GMGN_1M_OHLC'
+      }];
+    }
+  }, { limit: 2, now: () => now });
+  assert.equal(calls, 2);
+  assert.equal(signal.samples.m5.price, 1.1);
+  assert.equal(control.samples.m5.price, .95);
+  assert.equal(control.notionalUsdc, 0);
+  assert.equal(control.allocatedUsdc, undefined);
+  assert.equal(control.path.observedBars, 1);
+});
+
 test('a confirmed hard safety failure closes an existing experimental position', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v2-safety-'));
   try {

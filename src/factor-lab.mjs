@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicJson, readJsonWithBackup, tokenKey } from './local-store.mjs';
+import { FactorPathStore } from './factor-path-store.mjs';
+import { normalizePathCandles, summarizePath } from './factor-path.mjs';
 import {
   ENTRY_FIXED_COST_RATE, EXIT_FIXED_COST_RATE, EXIT_POLICY_VERSION,
   MAX_HOLD_MS, POSITION_COST_MODEL_VERSION, applyExitCandle, applySafetyExit, applyTimeoutExit, openShadowPosition, positionLiquidityImpact
@@ -971,10 +973,64 @@ function archiveTrades(trades, now) {
   };
 }
 
+function pathTargetEnd(trade, trades) {
+  const entryAt = finite(trade?.entry?.at);
+  if (entryAt === null || !(finite(trade?.entry?.price) > 0) || trade?.legacyFixedHorizonOnly === true) return null;
+  if (trade.cohort === 'signal') {
+    const fundedClose = Number(trade.allocatedUsdc) > 0 && trade.status === 'CLOSED' ? finite(trade.closedAt) : null;
+    return Math.min(entryAt + MAX_HOLD_MS, fundedClose ?? entryAt + MAX_HOLD_MS);
+  }
+  if (trade.cohort !== 'control' || !trade.matchedTradeId || trade.contaminatedAt) return null;
+  const paired = trades.find(row => row.id === trade.matchedTradeId && row.cohort === 'signal');
+  const pairedEntryAt = finite(paired?.entry?.at);
+  if (pairedEntryAt === null) return null;
+  const pairedEnd = pathTargetEnd(paired, trades);
+  if (pairedEnd === null) return null;
+  return entryAt + Math.min(MAX_HOLD_MS, Math.max(0, pairedEnd - pairedEntryAt));
+}
+
+function pathFailureCode(error) {
+  const code = String(error?.code || 'READ_FAILED').toUpperCase();
+  if (code === 'GMGN_RATE_LIMITED' || code === 'RATE_LIMITED') return 'RATE_LIMITED';
+  if (code === 'GMGN_TIMEOUT' || code === 'TIMEOUT') return 'TIMEOUT';
+  if (error?.confirmed === true && /NO_LIQUIDITY/.test(code)) return 'NO_LIQUIDITY';
+  if (error?.confirmed === true && /UNTRADEABLE|POOL_REMOVED/.test(code)) return 'UNTRADEABLE';
+  if (code === 'NO_CANDLE') return 'NO_CANDLE';
+  return 'READ_FAILED';
+}
+
+function nextMissingPathAt(pathState, entryAt, throughAt) {
+  const present = new Set((pathState?.bars || []).map(row => row.openAt));
+  for (let at = entryAt; at + 60_000 <= throughAt; at += 60_000) if (!present.has(at)) return at;
+  return null;
+}
+
+function boundedPathMetadata(pathState, summary, retry = null) {
+  const nullableFinite = value => value === null || value === undefined ? null : finite(value);
+  return {
+    schemaVersion: Number(pathState?.version || 1),
+    firstAt: nullableFinite(pathState?.firstAt),
+    lastAt: nullableFinite(pathState?.lastAt),
+    observedBars: Number(summary?.observedBars || 0),
+    expectedBars: Number(summary?.expectedBars || 0),
+    missingBars: Number(summary?.missingBars || 0),
+    coverage: finite(summary?.coverage) ?? 0,
+    continuous: summary?.continuous === true,
+    mfeRate: nullableFinite(summary?.mfeRate),
+    mfeAt: nullableFinite(summary?.mfeAt),
+    maeRate: nullableFinite(summary?.maeRate),
+    maeAt: nullableFinite(summary?.maeAt),
+    maxDrawdownRate: nullableFinite(summary?.maxDrawdownRate),
+    lastFailureCode: String(retry?.code || '').slice(0, 32),
+    nextAt: nullableFinite(retry?.nextAt)
+  };
+}
+
 export class FactorLab {
-  constructor(dir, { policy, now = Date.now } = {}) {
+  constructor(dir, { policy, now = Date.now, pathStore = null } = {}) {
     this.file = path.join(dir, 'factor-lab.json');
     this.now = now;
+    this.pathStore = pathStore || new FactorPathStore(dir);
     fs.mkdirSync(dir, { recursive: true });
     const fallback = defaultState(policy, now());
     const loaded = readJsonWithBackup(this.file, fallback);
@@ -1188,11 +1244,11 @@ export class FactorLab {
   async collect(gmgn, { limit = 4, now = this.now, deadline = Infinity } = {}) {
     let reads = 0;
     const initialNow = now();
-    const standardDue = this.dueJobs(initialNow).filter(job => !(['OPEN', 'RUNNER'].includes(job.trade?.status)
-      && job.trade?.cohort === 'signal' && job.trade?.legacyFixedHorizonOnly !== true));
+    const standardDue = this.dueJobs(initialNow).filter(job => job.kind === 'entry'
+      || pathTargetEnd(job.trade, this.state.trades) === null);
     const reservedStandardReads = standardDue.length && limit > 1 ? 1 : 0;
     const pathReadLimit = Math.max(0, limit - reservedStandardReads);
-    const openPositions = this.state.trades.filter(row => row?.cohort === 'signal'
+    const fundedOpen = this.state.trades.filter(row => row?.cohort === 'signal'
       && row?.legacyFixedHorizonOnly !== true && ['OPEN', 'RUNNER'].includes(row.status) && row.entry?.at)
       .filter(row => row.pendingExit
         ? initialNow >= Number(row.exitRetry?.nextAt || 0)
@@ -1200,6 +1256,18 @@ export class FactorLab {
       .sort((a, b) => Number(Boolean(b.pendingExit)) - Number(Boolean(a.pendingExit))
         || Number(a.lastPathAttemptAt || 0) - Number(b.lastPathAttemptAt || 0)
         || Number(a.lastCandleAt || a.entry.at) - Number(b.lastCandleAt || b.entry.at));
+    const fundedIds = new Set(fundedOpen.map(row => row.id));
+    const researchSignals = this.state.trades.filter(row => row?.cohort === 'signal' && !fundedIds.has(row.id)
+      && pathTargetEnd(row, this.state.trades) !== null
+      && initialNow >= Number(row.pathRetry?.nextAt || 0))
+      .sort((a, b) => Number(a.lastPathAttemptAt || 0) - Number(b.lastPathAttemptAt || 0)
+        || Number(a.signalAt || 0) - Number(b.signalAt || 0) || String(a.id).localeCompare(String(b.id)));
+    const matchedControls = this.state.trades.filter(row => row?.cohort === 'control'
+      && pathTargetEnd(row, this.state.trades) !== null
+      && initialNow >= Number(row.pathRetry?.nextAt || 0))
+      .sort((a, b) => Number(a.lastPathAttemptAt || 0) - Number(b.lastPathAttemptAt || 0)
+        || Number(a.signalAt || 0) - Number(b.signalAt || 0) || String(a.id).localeCompare(String(b.id)));
+    const pathRows = [...fundedOpen, ...researchSignals, ...matchedControls];
 
     const settlePending = async (position, requestedAt) => {
       if (!position.pendingExit || reads >= pathReadLimit || typeof gmgn.liquiditySnapshot !== 'function') return false;
@@ -1227,38 +1295,70 @@ export class FactorLab {
       return true;
     };
 
+    const refreshPathMetadata = (trade, throughAt) => {
+      const pathState = this.pathStore.read(trade.id);
+      const summary = summarizePath(pathState, {
+        entryAt: trade.entry.at, entryPrice: trade.entry.price, throughAt
+      });
+      trade.path = boundedPathMetadata(pathState, summary, trade.pathRetry);
+      return pathState;
+    };
+
+    const recordPathFailure = (trade, code, requestedAt) => {
+      const attempts = Number(trade.pathRetry?.attempts || 0) + 1;
+      const delay = code === 'NO_CANDLE' ? 60_000
+        : Math.min(60 * 60_000, 120_000 * 2 ** Math.min(attempts - 1, 5));
+      trade.pathRetry = { attempts, code, nextAt: requestedAt + delay };
+      const targetEndAt = pathTargetEnd(trade, this.state.trades);
+      refreshPathMetadata(trade, Math.min(requestedAt, targetEndAt ?? requestedAt));
+    };
+
     if (typeof gmgn.candlesBetween === 'function') {
-      for (const position of openPositions) {
+      for (const position of pathRows) {
         if (reads >= pathReadLimit || now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
         const requestedAt = now();
         if (position.pendingExit) {
           await settlePending(position, requestedAt);
           continue;
         }
+        const targetEndAt = pathTargetEnd(position, this.state.trades);
+        const throughAt = Math.min(requestedAt, targetEndAt ?? requestedAt);
+        const existingPath = this.pathStore.read(position.id);
+        const fromAt = nextMissingPathAt(existingPath, Number(position.entry.at), throughAt);
+        if (fromAt === null) {
+          refreshPathMetadata(position, throughAt);
+          continue;
+        }
         let candles = [];
         try {
           candles = await gmgn.candlesBetween(position.address,
-            Number(position.lastCandleAt || position.entry.at), requestedAt, position.chain, requestedAt);
+            fromAt, throughAt, position.chain, requestedAt);
           reads++;
           position.lastPathAttemptAt = requestedAt;
         } catch (error) {
           reads++;
           position.lastPathAttemptAt = requestedAt;
-          position.pathRetry = {
-            code: String(error?.code || 'READ_FAILED'),
-            nextAt: requestedAt + 120_000
-          };
-          if (error?.code === 'GMGN_RATE_LIMITED') break;
+          const code = pathFailureCode(error);
+          recordPathFailure(position, code, requestedAt);
+          if (error?.confirmed === true && ['UNTRADEABLE', 'NO_LIQUIDITY'].includes(code)) {
+            for (const job of dueShadowJobs([position], requestedAt).filter(job => job.kind === 'exit')) {
+              applyPriceSample(position, job, null, { code, confirmed: true });
+            }
+          }
+          if (code === 'RATE_LIMITED') break;
           continue;
         }
-        if (!candles.length) position.pathRetry = { code: 'NO_CANDLE', nextAt: requestedAt + 60_000 };
-        else delete position.pathRetry;
-        for (const candle of candles) {
-          const due = dueShadowJobs([position], candle.closeAt)
-            .filter(job => job.kind === 'exit' && Math.abs(job.targetAt - candle.closeAt) <= 60_000);
-          for (const job of due) applyPriceSample(position, job, {
-            at: candle.closeAt, price: candle.close, source: candle.source
-          });
+        const normalized = normalizePathCandles(candles, { now: throughAt });
+        if (!normalized.length) {
+          recordPathFailure(position, 'NO_CANDLE', requestedAt);
+          continue;
+        }
+
+        const accountPosition = fundedIds.has(position.id);
+        const accepted = [];
+        for (const candle of normalized) {
+          accepted.push(candle);
+          if (!accountPosition || candle.closeAt <= Number(position.lastCandleAt || position.entry.at)) continue;
           const previousCursor = position.lastCandleAt;
           const detected = applyExitCandle(position, candle, { exitLiquidity: null });
           if (detected.pending === 'EXIT_LIQUIDITY') {
@@ -1283,11 +1383,29 @@ export class FactorLab {
           }
           position.lastCandleAt = candle.closeAt;
         }
+
+        delete position.pathRetry;
+        const finalTargetEnd = pathTargetEnd(position, this.state.trades) ?? targetEndAt;
+        const finalThroughAt = Math.min(requestedAt, finalTargetEnd ?? requestedAt);
+        const stored = this.pathStore.append(position.id, accepted, {
+          now: requestedAt,
+          entryAt: position.entry.at,
+          entryPrice: position.entry.price,
+          throughAt: finalThroughAt
+        });
+        position.path = boundedPathMetadata(stored.path, stored.summary, null);
+        const barsByClose = new Map(stored.path.bars.map(candle => [candle.closeAt, candle]));
+        for (const job of dueShadowJobs([position], requestedAt).filter(job => job.kind === 'exit')) {
+          const candle = barsByClose.get(job.targetAt);
+          if (candle) applyPriceSample(position, job, {
+            at: candle.closeAt, price: candle.close, source: candle.source
+          });
+        }
       }
     }
     const remaining = Math.max(0, limit - reads);
-    const jobs = this.dueJobs(now()).filter(job => !(['OPEN', 'RUNNER'].includes(job.trade?.status)
-      && job.trade?.cohort === 'signal')).slice(0, remaining);
+    const jobs = this.dueJobs(now()).filter(job => job.kind === 'entry'
+      || pathTargetEnd(job.trade, this.state.trades) === null).slice(0, remaining);
     for (const job of jobs) {
       if (now() >= deadline || gmgn.disabled || gmgn.nextAllowedAt > now()) break;
       let sample = null;
