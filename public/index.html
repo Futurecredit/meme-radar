@@ -680,6 +680,14 @@
     .footer { order: 11; }
     .legacy-metric, .metric { display: none; }
     .result-dashboard, .funnel-panel { margin: 0 0 16px; }
+    .optimization-board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); background: #0a171b; border-bottom: 1px solid var(--line); }
+    .optimization-item { min-height: 78px; padding: 11px 14px; border-right: 1px solid var(--line-soft); }
+    .optimization-item:last-child { border-right: 0; }
+    .optimization-item span, .optimization-item small { display: block; color: var(--muted); font-size: 14px; }
+    .optimization-item strong { display: block; margin-top: 4px; color: var(--cyan); font-size: 15px; }
+    .optimization-details { padding: 0 16px; border-bottom: 1px solid var(--line-soft); background: #08121688; }
+    .optimization-details summary { padding: 8px 0; color: var(--muted); cursor: pointer; font-size: 14px; }
+    .optimization-details div { padding: 0 0 9px; color: var(--muted); font-size: 14px; }
     .result-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-top: 1px solid var(--line-soft); }
     .portfolio-metrics { grid-template-columns: repeat(7, minmax(0, 1fr)); background: #08121688; }
     .result-metric { padding: 13px 14px; border-right: 1px solid var(--line-soft); }
@@ -720,12 +728,14 @@
     .rule-row span:last-child { text-align: right; font-family: ui-monospace, monospace; }
     .why-summary { margin: 10px 0; color: var(--muted); }
     @media (max-width: 1100px) {
+      .optimization-board { grid-template-columns: repeat(2, 1fr); }
       .result-metrics { grid-template-columns: repeat(3, 1fr); }
       .result-detail-grid { grid-template-columns: 1fr; }
       .funnel-groups { grid-template-columns: 1fr; }
       .rule-groups { grid-template-columns: 1fr; }
     }
     @media (max-width: 620px) {
+      .optimization-board { grid-template-columns: 1fr; }
       .result-metrics { grid-template-columns: repeat(2, 1fr); }
       .funnel-strip.steps-2, .funnel-strip.steps-5 { grid-template-columns: repeat(2, 1fr); }
     }
@@ -787,6 +797,17 @@
 
     <section id="resultDashboard" class="panel result-dashboard" aria-labelledby="resultDashboardTitle">
       <div class="head"><div><h2 id="resultDashboardTitle" data-i18n="resultDashboardTitle">策略结果总览</h2><span data-i18n="simulationDisclaimer">全部为影子模拟，不连接钱包、不签名、不下单</span></div></div>
+      <div class="optimization-board" aria-label="持续优化决策" data-i18n-aria="optimizationBoardAria">
+        <div class="optimization-item"><span data-i18n="optimizationStateLabel">当前阶段</span><strong id="optimizationState">采集中</strong><small data-i18n="optimizationCollectOnly">自动晋级暂停，影子采集继续</small></div>
+        <div class="optimization-item"><span data-i18n="optimizationProblemLabel">当前最强问题</span><strong id="optimizationProblem">匹配对照不足</strong></div>
+        <div class="optimization-item"><span data-i18n="optimizationNextActionLabel">下一动作</span><strong id="optimizationNextAction">继续采集同链近邻对照</strong></div>
+        <div class="optimization-item"><span data-i18n="optimizationProgressLabel">可信数据进度</span><strong id="optimizationProgress">0 / 100 · 0 / 40 · 0% / 80%</strong></div>
+        <div class="optimization-item"><span data-i18n="optimizationRiskLabel">账户风险状态</span><strong id="optimizationRiskState" data-i18n="optimizationFixedRisk">固定仓位基线</strong></div>
+      </div>
+      <details id="optimizationDetails" class="optimization-details">
+        <summary data-i18n="optimizationDetailsLabel">查看数据质量明细</summary>
+        <div id="optimizationDetailsContent">--</div>
+      </details>
       <div class="result-metrics">
         <div class="result-metric"><span data-i18n="experimentSignals">实验信号</span><strong id="labSignalCount">0</strong><small data-i18n="positionsOnly">仅真实模拟仓位</small></div>
         <div class="result-metric"><span data-i18n="allocatedCapital">累计模拟投入</span><strong id="labAllocated">US$0</strong><small data-i18n="hundredEach">每笔100 USDC</small></div>
@@ -1178,6 +1199,28 @@
       localOnlyNoTrade: ['仅本浏览器标记，不会下单', '僅本瀏覽器標記，不會下單', 'Browser-only mark; no order', 'このブラウザのみ・注文なし', '현재 브라우저에만 저장·주문 없음', 'علامة في هذا المتصفح فقط؛ لا أوامر'],
       outcomeTitle: ['筛选后表现验证', '篩選後表現驗證', 'Post-screen performance', '選別後パフォーマンス', '필터링 후 성과 검증', 'أداء ما بعد الفرز'],
       resultDashboardTitle: ['策略结果总览','策略結果總覽','Strategy results','戦略結果','전략 결과','نتائج الاستراتيجية'],
+      optimizationBoardAria: ['持续优化决策','持續優化決策','Continuous optimization decision','継続最適化の判断','지속 최적화 결정','قرار التحسين المستمر'],
+      optimizationStateLabel: ['当前阶段','目前階段','Current phase','現在の段階','현재 단계','المرحلة الحالية'],
+      optimizationCollecting: ['采集中','採集中','Collecting','収集中','수집 중','جارٍ التجميع'],
+      optimizationCollectOnly: ['自动晋级暂停，影子采集继续','自動晉級暫停，影子採集繼續','Auto-promotion paused; shadow collection continues','自動昇格は停止、シャドー収集は継続','자동 승격 중지, 섀도 수집 계속','الترقية التلقائية متوقفة وجمع الظل مستمر'],
+      optimizationProblemLabel: ['当前最强问题','目前最強問題','Strongest blocker','最大の阻害要因','최우선 문제','أقوى عائق'],
+      optimizationNextActionLabel: ['下一动作','下一動作','Next action','次の対応','다음 작업','الإجراء التالي'],
+      optimizationProgressLabel: ['可信数据进度','可信資料進度','Trusted-data progress','信頼データ進捗','신뢰 데이터 진행','تقدم البيانات الموثوقة'],
+      optimizationRiskLabel: ['账户风险状态','帳戶風險狀態','Account risk state','口座リスク状態','계정 위험 상태','حالة مخاطر الحساب'],
+      optimizationFixedRisk: ['固定仓位基线','固定倉位基線','Fixed-position baseline','固定ポジション基準','고정 포지션 기준','خط أساس بحجم مركز ثابت'],
+      optimizationDetailsLabel: ['查看数据质量明细','查看資料品質明細','View data-quality details','データ品質の詳細','데이터 품질 상세 보기','عرض تفاصيل جودة البيانات'],
+      optimizationProblemSource: ['数据源或完整性异常','資料源或完整性異常','Source or integrity failure','データ源または整合性異常','데이터 소스/무결성 오류','خلل في المصدر أو سلامة البيانات'],
+      optimizationProblemPairs: ['匹配对照不足','匹配對照不足','Insufficient matched controls','対応対照が不足','매칭 대조군 부족','أزواج الضبط غير كافية'],
+      optimizationProblemPath: ['完整价格路径覆盖不足','完整價格路徑覆蓋不足','Insufficient full-path coverage','完全価格パスの網羅不足','전체 가격 경로 커버리지 부족','تغطية مسار السعر الكامل غير كافية'],
+      optimizationProblemHorizon: ['固定周期覆盖不足','固定週期覆蓋不足','Insufficient horizon coverage','固定期間の網羅不足','고정 기간 커버리지 부족','تغطية الفترات غير كافية'],
+      optimizationProblemSamples: ['15分钟完成样本不足','15分鐘完成樣本不足','Insufficient completed 15m samples','15分完了サンプル不足','15분 완료 표본 부족','عينات 15 دقيقة المكتملة غير كافية'],
+      optimizationProblemReady: ['数据门槛已满足，仍保持只采集','資料門檻已滿足，仍維持只採集','Data targets met; still collect-only','目標達成、収集専用を継続','데이터 기준 충족, 수집 전용 유지','اكتملت الأهداف وما زال الجمع فقط'],
+      optimizationActionSource: ['优先重试失败路径并核对异常数据','優先重試失敗路徑並核對異常資料','Retry failed paths and inspect integrity','失敗パスを再取得し異常を確認','실패 경로 재시도 및 무결성 점검','أعد محاولة المسارات وافحص السلامة'],
+      optimizationActionPairs: ['继续采集同链近邻对照','繼續採集同鏈近鄰對照','Collect same-chain nearest controls','同チェーン近傍対照を収集','동일 체인 근접 대조군 수집','اجمع ضوابط قريبة على الشبكة نفسها'],
+      optimizationActionPath: ['补齐信号与对照的完整1分钟路径','補齊信號與對照的完整1分鐘路徑','Complete 1-minute paths for signals and controls','シグナルと対照の1分パスを補完','신호와 대조군의 1분 경로 보완','أكمل مسارات الدقيقة للإشارات والضوابط'],
+      optimizationActionHorizon: ['继续补齐5m/10m/15m结果','繼續補齊5m/10m/15m結果','Complete 5m/10m/15m outcomes','5m/10m/15m結果を補完','5m/10m/15m 결과 보완','أكمل نتائج 5 و10 و15 دقيقة'],
+      optimizationActionSamples: ['继续积累完成15分钟的实验信号','繼續累積完成15分鐘的實驗信號','Collect more completed 15m signals','15分完了シグナルを蓄積','15분 완료 신호 추가 수집','اجمع مزيدًا من إشارات 15 دقيقة'],
+      optimizationActionReady: ['保持采集，等待下一阶段人工启用','維持採集，等待下一階段人工啟用','Keep collecting until the next phase is enabled','次段階の有効化まで収集継続','다음 단계 활성화까지 수집 유지','واصل الجمع حتى تفعيل المرحلة التالية'],
       simulationDisclaimer: ['全部为影子模拟，不连接钱包、不签名、不下单','全部為影子模擬，不連接錢包、不簽名、不下單','Shadow simulation only; no wallet, signing or orders','シャドー模擬のみ。ウォレット接続・署名・注文なし','섀도 시뮬레이션 전용; 지갑·서명·주문 없음','محاكاة فقط؛ بلا محفظة أو توقيع أو أوامر'],
       experimentSignals: ['实验信号','實驗信號','Experiment signals','実験シグナル','실험 신호','إشارات التجربة'],
       positionsOnly: ['仅真实模拟仓位','僅真實模擬倉位','Funded shadow positions only','模擬資金ポジションのみ','모의 자금 포지션만','مراكز المحاكاة الممولة فقط'],
@@ -2412,6 +2455,7 @@
 
     function renderResultDashboard(data) {
       const summary = data.factorLabSummary || {};
+      const optimization = summary.optimization || {};
       const capital = summary.capital || {};
       const portfolio = summary.portfolio || {};
       const exits = summary.exits || {};
@@ -2421,6 +2465,33 @@
         const row = horizon(key);
         return formatSignedPercent(row.conservativeMedian) + ' · ' + formatSignedPercent(row.hitRate) + ' · P10 ' + formatSignedPercent(row.p10);
       };
+      const blockerKeys = {
+        SOURCE_INTEGRITY: ['optimizationProblemSource', 'optimizationActionSource'],
+        MATCHED_PAIRS: ['optimizationProblemPairs', 'optimizationActionPairs'],
+        PATH_COVERAGE: ['optimizationProblemPath', 'optimizationActionPath'],
+        HORIZON_COVERAGE: ['optimizationProblemHorizon', 'optimizationActionHorizon'],
+        COMPLETED_15M: ['optimizationProblemSamples', 'optimizationActionSamples'],
+        DATA_READY: ['optimizationProblemReady', 'optimizationActionReady']
+      };
+      const blocker = blockerKeys[optimization.primaryBlocker] || blockerKeys.MATCHED_PAIRS;
+      const targets = optimization.targets || {};
+      const qualityCoverage = optimization.coverage || {};
+      const minimumCoverage = Math.min(number(qualityCoverage.m5 && qualityCoverage.m5.rate),
+        number(qualityCoverage.m10 && qualityCoverage.m10.rate), number(qualityCoverage.m15 && qualityCoverage.m15.rate));
+      byId('optimizationState').textContent = t('optimizationCollecting');
+      byId('optimizationProblem').textContent = t(blocker[0]);
+      byId('optimizationNextAction').textContent = t(blocker[1]);
+      byId('optimizationProgress').textContent = formatCount(number(optimization.completed15m)) + ' / ' + formatCount(number(targets.completed15m, 100))
+        + ' · ' + formatCount(number(optimization.matchedPairs)) + ' / ' + formatCount(number(targets.matchedPairs, 40))
+        + ' · ' + formatPercent(minimumCoverage) + ' / ' + formatPercent(number(targets.horizonCoverage, .8));
+      byId('optimizationRiskState').textContent = t('optimizationFixedRisk');
+      byId('optimizationDetailsContent').textContent = '5m ' + formatPercent(qualityCoverage.m5 && qualityCoverage.m5.rate)
+        + ' · 10m ' + formatPercent(qualityCoverage.m10 && qualityCoverage.m10.rate)
+        + ' · 15m ' + formatPercent(qualityCoverage.m15 && qualityCoverage.m15.rate)
+        + ' · path ' + formatPercent(optimization.pathCoverage)
+        + ' · source ' + formatCount(number(optimization.sourceFailures))
+        + ' · integrity ' + formatCount(number(optimization.integrityFailures))
+        + ' · collectOnly ' + String(optimization.collectOnly === true);
       byId('labSignalCount').textContent = formatCount(number(summary.signalCount));
       byId('labAllocated').textContent = formatMoney(number(capital.allocatedUsdc));
       byId('labOpenPositions').textContent = formatCount(number(capital.openPositions));

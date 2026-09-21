@@ -123,3 +123,35 @@ test('status/export include sanitized factor lab data and manual policy save cre
   assert.ok(Array.isArray(exported.body.factorLab.aggregates));
   assert.doesNotMatch(JSON.stringify(exported.body.factorLab), /api.?key|private.?key|secret|raw/i);
 });
+
+test('status exposes only allowlisted optimization quality fields', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factor-quality-api-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const controls = new RadarControls(dir, config.supportedChains, 'bsc');
+  const optimization = {
+    phase: 'DATA_TRUST', collectOnly: true, canGenerateCandidate: false, canPromote: false,
+    primaryBlocker: 'MATCHED_PAIRS', reasons: ['MATCHED_PAIRS', 'PATH_COVERAGE', 'SECRET_REASON'],
+    completed15m: 22, matchedPairs: 3, pathCoverage: 0.75, sourceFailures: 0, integrityFailures: 1,
+    coverage: { m5: { eligible: 25, completed: 22, missing: 3, rate: 0.88, raw: 'forbidden' },
+      m10: { eligible: 24, completed: 20, missing: 4, rate: 0.833 },
+      m15: { eligible: 22, completed: 18, missing: 4, rate: 0.818 } },
+    targets: { completed15m: 100, matchedPairs: 40, horizonCoverage: 0.8, pathCoverage: 0.8, privateKey: 'forbidden' },
+    remaining: { completed15m: 78, matchedPairs: 37, horizonCoverage: 0, pathCoverage: 0.05, secret: 'forbidden' },
+    raw: 'forbidden', privateKey: 'forbidden', unknown: { providerPayload: 'forbidden' }
+  };
+  const state = { value: { activeChain: 'bsc', status: 'RUNNING', supportedChains: config.supportedChains,
+    candidates: [], chainStates: {}, factorLabSummary: { enabled: true, optimization } } };
+  const server = createServer({ state, controls, settings: { ...config, stateDir: dir, publicDir: config.publicDir } });
+  const status = await dispatch(server, 'GET', '/api/status');
+  assert.deepEqual(status.body.factorLabSummary.optimization, {
+    phase: 'DATA_TRUST', collectOnly: true, canGenerateCandidate: false, canPromote: false,
+    primaryBlocker: 'MATCHED_PAIRS', reasons: ['MATCHED_PAIRS', 'PATH_COVERAGE'],
+    completed15m: 22, matchedPairs: 3, pathCoverage: 0.75, sourceFailures: 0, integrityFailures: 1,
+    coverage: { m5: { eligible: 25, completed: 22, missing: 3, rate: 0.88 },
+      m10: { eligible: 24, completed: 20, missing: 4, rate: 0.833 },
+      m15: { eligible: 22, completed: 18, missing: 4, rate: 0.818 } },
+    targets: { completed15m: 100, matchedPairs: 40, horizonCoverage: 0.8, pathCoverage: 0.8 },
+    remaining: { completed15m: 78, matchedPairs: 37, horizonCoverage: 0, pathCoverage: 0.05 }
+  });
+  assert.doesNotMatch(JSON.stringify(status.body), /forbidden|privateKey|providerPayload|SECRET_REASON/);
+});

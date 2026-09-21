@@ -386,6 +386,43 @@ function publicOutcomeSummary(source = {}) {
   };
 }
 
+const PUBLIC_OPTIMIZATION_REASONS = new Set([
+  'SOURCE_INTEGRITY', 'MATCHED_PAIRS', 'PATH_COVERAGE', 'HORIZON_COVERAGE', 'COMPLETED_15M', 'DATA_READY'
+]);
+
+function publicOptimizationSummary(source = {}) {
+  const reason = value => {
+    const code = publicCode(value);
+    return PUBLIC_OPTIMIZATION_REASONS.has(code) ? code : '';
+  };
+  const coverage = Object.fromEntries(['m5', 'm10', 'm15'].map(key => {
+    const row = source.coverage?.[key] || {};
+    return [key, {
+      ...countSummary(row, ['eligible', 'completed', 'missing']),
+      rate: finiteOrNull(row.rate)
+    }];
+  }));
+  return {
+    phase: source.phase === 'DATA_TRUST' ? 'DATA_TRUST' : '',
+    collectOnly: source.collectOnly === true,
+    canGenerateCandidate: source.canGenerateCandidate === true,
+    canPromote: source.canPromote === true,
+    primaryBlocker: reason(source.primaryBlocker),
+    reasons: [...new Set((Array.isArray(source.reasons) ? source.reasons : []).map(reason).filter(Boolean))],
+    completed15m: finite(source.completed15m), matchedPairs: finite(source.matchedPairs),
+    pathCoverage: finiteOrNull(source.pathCoverage), sourceFailures: finite(source.sourceFailures),
+    integrityFailures: finite(source.integrityFailures), coverage,
+    targets: {
+      completed15m: finite(source.targets?.completed15m), matchedPairs: finite(source.targets?.matchedPairs),
+      horizonCoverage: finiteOrNull(source.targets?.horizonCoverage), pathCoverage: finiteOrNull(source.targets?.pathCoverage)
+    },
+    remaining: {
+      completed15m: finite(source.remaining?.completed15m), matchedPairs: finite(source.remaining?.matchedPairs),
+      horizonCoverage: finite(source.remaining?.horizonCoverage), pathCoverage: finite(source.remaining?.pathCoverage)
+    }
+  };
+}
+
 function publicFactorLabSummary(source = {}) {
   const horizons = {};
   for (const key of ['m5', 'm10', 'm15', 'm30', 'h1', 'h2', 'h24']) {
@@ -433,7 +470,8 @@ function publicFactorLabSummary(source = {}) {
       lastReportAt: finite(source.reportProgress?.lastReportAt),
       nextStageEarliestAt: finite(source.reportProgress?.nextStageEarliestAt),
       nextDailyAt: finite(source.reportProgress?.nextDailyAt)
-    }
+    },
+    optimization: publicOptimizationSummary(source.optimization)
   };
 }
 

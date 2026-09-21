@@ -364,3 +364,14 @@ test('有限本金账户区分本金、现金、占用、权益、累计成交�
   assert.match(html, /row\.portfolioEpochId === currentEpochId/);
   assert.match(html, /历史账期/);
 });
+
+test('持续优化决策板先展示当前问题和下一动作且不常驻明细', () => {
+  for (const id of [
+    'optimizationState', 'optimizationProblem', 'optimizationNextAction',
+    'optimizationProgress', 'optimizationRiskState'
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /collectOnly/);
+  assert.match(html, /匹配对照不足/);
+  assert.match(html, /自动晋级暂停.*影子采集继续/);
+  assert.match(html, /<details[^>]*id="optimizationDetails"/);
+});
