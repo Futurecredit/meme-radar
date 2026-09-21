@@ -63,3 +63,23 @@ test('daily reports are immutable snapshots and capital summary uses positions o
     assert.equal(summary.reportProgress.completed15m, 2);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('archived rows retain bounded path aggregate counts only', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-report-path-'));
+  try {
+    const now = 100 * 24 * 60 * 60_000;
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+    lab.state.trades = [completedPosition(1, {
+      signalAt: 1,
+      path: { schemaVersion: 1, observedBars: 12, expectedBars: 15, missingBars: 3,
+        coverage: .8, historicalUnavailable: false, bars: [{ close: 1 }] }
+    })];
+    lab.prune(now);
+    assert.deepEqual(lab.state.aggregates.at(-1).paths, {
+      tradeCount: 1, historicalUnavailable: 0, observedBars: 12, expectedBars: 15, missingBars: 3
+    });
+    const exported = lab.exportPublic();
+    assert.deepEqual(exported.aggregates.at(-1).paths, lab.state.aggregates.at(-1).paths);
+    assert.doesNotMatch(JSON.stringify(exported), /"bars"/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

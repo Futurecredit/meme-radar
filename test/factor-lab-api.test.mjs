@@ -34,6 +34,10 @@ test('factor lab API paginates allowlisted views and protects control writes', a
     factors: { marketCap: 40_000, liquidity: 10_000, secret: 'do-not-leak' },
     entry: { at: 200, price: 1, targetAt: 200 }, samples: { m5: { netReturn: .1, conservativeReturn: .1, privateKey: 'do-not-leak' } },
     status: 'OPEN', allocatedUsdc: 100, recoveredUsdc: 0, remainingUnits: 90,
+    path: { schemaVersion: 1, firstAt: 200, lastAt: 900_000, observedBars: 12, expectedBars: 15,
+      missingBars: 3, coverage: .8, continuous: false, mfeRate: .2, mfeAt: 600_000,
+      maeRate: -.1, maeAt: 300_000, maxDrawdownRate: -.15, lastFailureCode: 'TIMEOUT',
+      bars: [{ close: 99 }], providerError: 'do-not-leak', absolutePath: 'D:\\secret' },
     cashflows: [{ at: 200, kind: 'ENTRY', units: 90, price: 1, netUsdc: -100, secret: 'do-not-leak' }],
     raw: 'do-not-leak'
   });
@@ -57,12 +61,18 @@ test('factor lab API paginates allowlisted views and protects control writes', a
   assert.equal(trades.status, 200);
   assert.equal(trades.body.rows.length, 1);
   assert.equal(trades.body.rows[0].samples.m5.netReturn, .1);
-  assert.doesNotMatch(JSON.stringify(trades.body), /do-not-leak|privateKey|raw/);
+  assert.doesNotMatch(JSON.stringify(trades.body), /do-not-leak|privateKey|"raw"/);
   const positions = await dispatch(server, 'GET', '/api/factor-lab?view=positions&chain=bsc&limit=10');
   assert.equal(positions.status, 200);
   assert.equal(positions.body.rows.length, 1);
   assert.equal(positions.body.rows[0].allocatedUsdc, 100);
   assert.equal(positions.body.rows[0].cashflows[0].kind, 'ENTRY');
+  assert.deepEqual(positions.body.rows[0].path, {
+    schemaVersion: 1, historicalUnavailable: false, firstAt: 200, lastAt: 900_000,
+    observedBars: 12, expectedBars: 15, missingBars: 3, coverage: .8, continuous: false,
+    mfeRate: .2, mfeAt: 600_000, maeRate: -.1, maeAt: 300_000,
+    maxDrawdownRate: -.15, lastFailureCode: 'TIMEOUT'
+  });
   assert.equal(positions.body.rows[0].twitter, 'dog_coin');
   assert.equal(positions.body.rows[0].website, 'https://dog.example/');
   assert.match(positions.body.rows[0].gmgnUrl, /^https:\/\/gmgn\.ai\//);
@@ -73,7 +83,7 @@ test('factor lab API paginates allowlisted views and protects control writes', a
   const reports = await dispatch(server, 'GET', '/api/factor-lab?view=reports&limit=10');
   assert.equal(reports.status, 200);
   assert.equal(reports.body.rows[0].type, 'DAILY');
-  assert.doesNotMatch(JSON.stringify({ positions: positions.body, samples: samples.body, reports: reports.body }), /do-not-leak|secret|raw/);
+  assert.doesNotMatch(JSON.stringify({ positions: positions.body, samples: samples.body, reports: reports.body }), /do-not-leak|secret|"raw"|"bars"|absolutePath|providerError/);
   assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=unknown')).status, 400);
   assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&wat=1')).status, 400);
   assert.equal((await dispatch(server, 'GET', '/api/factor-lab?view=trades&limit=10junk')).status, 400);

@@ -2681,16 +2681,18 @@
         ? allRows.filter(function (row) { return row.portfolioEpochId === currentEpochId; }) : allRows;
       const funded = allRows.filter(function (row) { return Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0; });
       const currentFunded = currentRows.filter(function (row) { return Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0; });
+      const pendingRows = currentRows.filter(function (row) { return row.portfolioStatus === 'RESERVED'; });
+      const unavailableRows = currentRows.filter(function (row) { return row.portfolioStatus === 'ENTRY_UNAVAILABLE'; }).slice(0, 10);
       const skipped = currentRows.filter(function (row) { return String(row.portfolioStatus || '').indexOf('SKIPPED_') === 0; }).length;
-      const pending = currentRows.filter(function (row) { return !(Number(row.allocatedUsdc) > 0 && row.entry && Number(row.entry.price) > 0)
-        && String(row.portfolioStatus || '').indexOf('SKIPPED_') !== 0; }).length;
+      const pending = pendingRows.length;
       const open = currentFunded.filter(function (row) { return row.status === 'OPEN' || row.status === 'RUNNER'; }).length;
       const realized = currentFunded.reduce(function (sum, row) { return sum + number(row.realizedNetUsdc); }, 0);
       byId('shadowLedgerSummary').textContent = currentFunded.length
         ? '本账期已入场 ' + formatCount(currentFunded.length) + ' · 持仓 ' + formatCount(open) + ' · 已平仓 ' + formatCount(currentFunded.length - open) + ' · 净结果 ' + formatMoney(realized) + ' · 待入场 ' + formatCount(pending) + ' · 容量跳过 ' + formatCount(skipped)
         : t('shadowLedgerEmpty') + (pending ? ' · 待入场 ' + formatCount(pending) : '') + (skipped ? ' · 容量跳过 ' + formatCount(skipped) : '');
       byId('shadowLedgerPositions').innerHTML = factorLabTable(
-        ['代币 / 链','状态','模拟投入','买入时间 / 价格','卖出时间 / 价格','回收 / 净盈亏','退出原因','研究入口 / 现金流'], funded,
+        ['代币 / 链','状态','模拟投入','买入时间 / 价格','卖出时间 / 价格','回收 / 净盈亏','退出原因','研究入口 / 现金流'],
+        funded.concat(pendingRows, unavailableRows),
         function (row) {
           const entry = positionEntry(row), exits = positionExitCashflows(row);
           const historical = Boolean(currentEpochId && row.portfolioEpochId !== currentEpochId);
@@ -2703,6 +2705,17 @@
           }).join('');
           const links = actionLinks({ address: row.address, chain: row.chain, symbol: row.symbol, gmgnUrl: row.gmgnUrl, info: { website: row.website, twitter: row.twitter } })
             .replace('data-action="copy"', 'data-shadow-copy');
+          if (row.portfolioStatus === 'RESERVED' || row.portfolioStatus === 'ENTRY_UNAVAILABLE') {
+            const waiting = row.portfolioStatus === 'RESERVED';
+            return [
+              '<strong>' + escapeHtml(row.symbol || '?') + '</strong><br><span class="muted">' + escapeHtml(row.chain || '--') + '</span>',
+              escapeHtml(waiting ? '待入场' : '入场数据缺失'),
+              escapeHtml(waiting ? '待入场预留 ' + formatMoney(number(row.portfolioStakeUsdc)) : formatMoney(0)),
+              escapeHtml(formatClock(entry.targetAt)) + '<br><span class="muted">等待完整1分钟K线</span>',
+              '<span class="muted">--</span>', '<span class="muted">--</span>',
+              escapeHtml(waiting ? '最多等待5分钟' : '已释放资金与仓位'), links
+            ];
+          }
           const pnl = number(row.realizedNetUsdc), pnlTone = pnl > 0 ? 'good' : pnl < 0 ? 'bad' : '';
           return [
             '<strong>' + escapeHtml(row.symbol || '?') + '</strong><br><span class="muted">' + escapeHtml(row.chain || '--') + '</span>',

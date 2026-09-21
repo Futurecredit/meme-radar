@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { FactorLab, FACTOR_LAB_VERSION, applyPriceSample } from '../src/factor-lab.mjs';
+import {
+  FactorLab, FACTOR_LAB_VERSION, applyPriceSample, defaultSoftStrategy, strategyFingerprint
+} from '../src/factor-lab.mjs';
 import { defaultPolicy } from '../src/policy.mjs';
 import { openShadowPosition } from '../src/shadow-position.mjs';
 
@@ -25,13 +27,13 @@ test('V2 persists capital positions separately from zero-capital reference sampl
       status: 'WAIT_RECHECK', experimentEligible: false
     }), { now: 2 });
     lab.save();
-    assert.equal(lab.state.version, 2);
+    assert.equal(lab.state.version, 3);
     assert.equal(lab.state.positions.length, 1);
     assert.equal(lab.state.positions[0].notionalUsdc, 100);
     assert.equal(lab.state.referenceSamples.length, 1);
     assert.equal(lab.state.referenceSamples[0].notionalUsdc, 0);
     const persisted = JSON.parse(fs.readFileSync(path.join(dir, 'factor-lab.json'), 'utf8'));
-    assert.equal(persisted.version, 2);
+    assert.equal(persisted.version, 3);
     assert.equal(Array.isArray(persisted.positions), true);
     assert.equal(Array.isArray(persisted.referenceSamples), true);
     assert.equal(Array.isArray(persisted.reports), true);
@@ -187,7 +189,7 @@ test('V1 history migrates to fixed-horizon references without fabricating positi
       history: []
     }));
     const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => 10 });
-    assert.equal(FACTOR_LAB_VERSION, 2);
+    assert.equal(FACTOR_LAB_VERSION, 3);
     assert.equal(lab.state.positions.length, 0);
     assert.equal(lab.state.referenceSamples.length, 2);
     assert.ok(lab.state.referenceSamples.every(item => item.legacyFixedHorizonOnly === true));
@@ -223,6 +225,110 @@ test('open positions consume the read budget first and one OHLC path fills due h
     assert.equal(calls.prices, 0);
     assert.equal(position.samples.m5.price, 1.1);
     assert.equal(position.status, 'OPEN');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('stale entry reservations release after five minutes and a fresh skipped signal is promoted', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-entry-timeout-'));
+  try {
+    let now = 1;
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+    const signals = Array.from({ length: 6 }, (_, index) => lab.recordCandidate(row({
+      address: `0x${String(index + 1).padStart(40, '0')}`
+    }), { now: index + 1 }));
+    for (const signal of signals.slice(0, 5)) signal.entry.targetAt = 60_000;
+    signals[5].entry.targetAt = 350_000;
+    now = 361_000;
+    await lab.collect({ disabled: false, nextAllowedAt: 0,
+      async priceAt() { return null; }
+    }, { limit: 1, now: () => now });
+    assert.ok(signals.slice(0, 5).every(item => item.portfolioStatus === 'ENTRY_UNAVAILABLE'));
+    assert.ok(signals.slice(0, 5).every(item => item.portfolioStakeUsdc === 0));
+    assert.equal(signals[5].portfolioStatus, 'RESERVED');
+    assert.equal(signals[5].portfolioStakeUsdc, 50);
+    assert.equal(lab.summary(now).portfolio.reservedPositions, 1);
+    assert.equal(lab.summary(now).portfolio.availableSlots, 4);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('funded entry reservations are read before zero-capital skipped signals', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-entry-priority-'));
+  try {
+    let now = 120_000;
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now });
+    const rows = Array.from({ length: 6 }, (_, index) => lab.recordCandidate(row({
+      address: `0x${String(index + 1).repeat(40)}`
+    }), { now: index + 1 }));
+    const reserved = rows[0], skipped = rows[5];
+    for (const item of rows.slice(0, 5)) item.entry.targetAt = 60_000;
+    skipped.entry.targetAt = 1;
+    const calls = [];
+    await lab.collect({ disabled: false, nextAllowedAt: 0,
+      async priceAt(address, at) { calls.push([address, at]); return { at, price: 1, liquidity: 10_000 }; }
+    }, { limit: 1, now: () => now });
+    assert.notEqual(calls[0][0], skipped.address);
+    assert.ok(rows.slice(0, 5).some(item => item.status === 'OPEN'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('V2 migration preserves every row and sample without inventing path coverage', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v3-migrate-'));
+  try {
+    const policy = defaultPolicy();
+    const strategy = defaultSoftStrategy(policy);
+    fs.writeFileSync(path.join(dir, 'factor-lab.json'), JSON.stringify({
+      version: 2, autoPromotionEnabled: true,
+      champion: { version: strategyFingerprint(strategy), strategy, activatedAt: 1 },
+      previousChampion: null, challenger: null,
+      positions: [{ id: 'a'.repeat(32), cohort: 'signal', chain: 'bsc', address: '0x1',
+        signalAt: 1, samples: { m15: { conservativeReturn: .1 } } }],
+      referenceSamples: [{ id: 'b'.repeat(32), cohort: 'control', chain: 'bsc', address: '0x2',
+        signalAt: 2, samples: { m15: { conservativeReturn: -.1 } } }],
+      reports: [], aggregates: [], history: [],
+      portfolioEpoch: { id: 'c'.repeat(24), startedAt: 1, costModelVersion: 3, fixedCostRate: .05 },
+      lastPromotionAt: 0, disabledReason: ''
+    }));
+    let lab = new FactorLab(dir, { policy, now: () => 1_000 });
+    assert.equal(FACTOR_LAB_VERSION, 3);
+    assert.equal(lab.state.trades.length, 2);
+    assert.equal(lab.state.trades.reduce((n, item) => n + Object.keys(item.samples || {}).length, 0), 2);
+    assert.ok(lab.state.trades.every(item => item.path.historicalUnavailable === true));
+    assert.ok(lab.state.trades.every(item => item.path.coverage === undefined));
+    assert.equal(lab.state.history.filter(item => item.type === 'STATE_MIGRATED').length, 1);
+    lab.save();
+    lab = new FactorLab(dir, { policy, now: () => 2_000 });
+    assert.equal(lab.state.history.filter(item => item.type === 'STATE_MIGRATED').length, 1);
+    assert.equal(lab.state.trades.length, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('retention persists the reduced index before pruning stale paths and preserves open paths', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v3-path-retention-'));
+  try {
+    const now = 100 * 24 * 60 * 60_000;
+    const calls = [];
+    let lab;
+    const pathStore = {
+      prune(options) {
+        const persisted = JSON.parse(fs.readFileSync(path.join(dir, 'factor-lab.json'), 'utf8'));
+        assert.ok(!persisted.positions.some(item => item.id === 'b'.repeat(32)));
+        calls.push(options);
+        return { removed: 1, preserved: 1 };
+      }
+    };
+    lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now, pathStore });
+    lab.state.trades = [
+      { id: 'a'.repeat(32), cohort: 'signal', signalAt: 1, status: 'OPEN', samples: {} },
+      { id: 'b'.repeat(32), cohort: 'signal', signalAt: 2, status: 'CLOSED', samples: {},
+        path: { schemaVersion: 1, observedBars: 9, expectedBars: 15, coverage: .6 } }
+    ];
+    lab.prune(now);
+    assert.equal(calls.length, 0);
+    lab.save();
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].keepIds.has('a'.repeat(32)));
+    assert.ok(calls[0].removeIds.has('b'.repeat(32)));
+    assert.equal(lab.state.aggregates.at(-1).paths.observedBars, 9);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -420,11 +526,12 @@ test('collection reserves budget for pending entries and rotates open paths', as
       const position = lab.recordCandidate(row({ address: `0x${String(i).padStart(40, '0')}` }), { now: i });
       if (i < 5) openShadowPosition(position, { at: 60_000, price: 1, liquidity: 10_000 });
     }
+    lab.state.positions.find(item => item.address.endsWith('5')).entry.targetAt = 360_000;
     const calls = { paths: [], prices: 0 };
     await lab.collect({
       disabled: false, nextAllowedAt: 0,
       async candlesBetween(address) { calls.paths.push(address); return []; },
-      async priceAt() { calls.prices++; return { at: 60_000, price: 1, liquidity: 10_000, source: 'GMGN_1M_CLOSE' }; }
+      async priceAt(_address, targetAt) { calls.prices++; return { at: targetAt, price: 1, liquidity: 10_000, source: 'GMGN_1M_CLOSE' }; }
     }, { limit: 4, now: () => now });
     assert.equal(calls.paths.length, 3);
     assert.equal(calls.prices, 1);

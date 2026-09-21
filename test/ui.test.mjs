@@ -375,3 +375,10 @@ test('持续优化决策板先展示当前问题和下一动作且不常驻明�
   assert.match(html, /自动晋级暂停.*影子采集继续/);
   assert.match(html, /<details[^>]*id="optimizationDetails"/);
 });
+
+test('影子仓位区展示待入场预留和失败原因而不是隐藏它们', () => {
+  assert.match(html, /pendingRows/);
+  assert.match(html, /ENTRY_UNAVAILABLE/);
+  assert.match(html, /待入场预留/);
+  assert.match(html, /入场数据缺失/);
+});
