@@ -332,6 +332,38 @@ test('retention persists the reduced index before pruning stale paths and preser
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('failed index persistence never prunes paths and a later successful save retries cleanup', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-v3-path-save-failure-'));
+  const originalRename = fs.renameSync;
+  try {
+    const now = 100 * 24 * 60 * 60_000;
+    const removedId = 'd'.repeat(32);
+    const calls = [];
+    const pathStore = { prune(options) { calls.push(options); return { removed: 1, preserved: 0 }; } };
+    const lab = new FactorLab(dir, { policy: defaultPolicy(), now: () => now, pathStore });
+    lab.state.trades = [{ id: removedId, cohort: 'signal', signalAt: 1, status: 'CLOSED', samples: {},
+      path: { schemaVersion: 1, observedBars: 4, expectedBars: 15, coverage: 4 / 15 } }];
+    lab.prune(now);
+
+    fs.renameSync = (source, target) => {
+      if (target === path.join(dir, 'factor-lab.json')) throw Object.assign(new Error('forced_index_failure'), { code: 'EIO' });
+      return originalRename(source, target);
+    };
+    assert.throws(() => lab.save(), /forced_index_failure/);
+    assert.equal(calls.length, 0);
+    assert.ok(lab.pendingPathPruneIds.has(removedId));
+
+    fs.renameSync = originalRename;
+    lab.save();
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].removeIds.has(removedId));
+    assert.equal(lab.pendingPathPruneIds.size, 0);
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('one path read fills multiple horizons for an unfunded research signal', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-research-path-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
